@@ -1,0 +1,43 @@
+# Baseline implementation using pytorch-3dunet
+
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv
+
+# Data
+data/
+data_hdf5/
+*.nii
+*.nii.gz
+*.h5
+*.hdf5
+
+# Checkpoints and logs
+checkpoints/
+logs/
+*.pth
+*.pt
+
+# Results
+evaluation_results/
+*.png
+*.pdf
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
