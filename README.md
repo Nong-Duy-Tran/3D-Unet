@@ -28,20 +28,27 @@ pip install -r requirements.txt
 Convert your MRI data to HDF5 format:
 
 ```bash
-python prepare_data.py --input_dir /path/to/mri/data --output_dir ./data
+python -m src.baseline.prepare_data --input_dir /path/to/mri/data --output_dir ./data
 ```
 
 
 ## Training
 
+Lightning + Hydra + W&B:
 ```bash
-python train.py --config config.yaml
+python -m src.baseline.train
+```
+
+Override examples:
+```bash
+python -m src.baseline.train training.max_epochs=20 data.batch_size=8
+python -m src.baseline.train logging.wandb.enabled=false
 ```
 
 ## Evaluation
 
 ```bash
-python evaluate.py --checkpoint checkpoints/best_model.pth --data_dir data/val
+python -m src.baseline.evaluate --checkpoint checkpoints/best_model.pth --data_dir data/val
 ```
 
 ## Metrics

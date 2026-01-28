@@ -11,9 +11,10 @@ from sklearn.metrics import (
     f1_score, roc_auc_score, classification_report
 )
 
-from model import get_model
-from dataset import get_dataloaders
-from utils import plot_confusion_matrix, plot_roc_curve, load_checkpoint
+from src.baseline.models import get_model
+from src.baseline.data import get_dataloaders
+from src.utils.plots import plot_confusion_matrix, plot_roc_curve
+from src.utils.checkpoint import load_checkpoint
 
 
 def evaluate_model(model, dataloader, device):
@@ -134,7 +135,7 @@ if __name__ == "__main__":
                        help='Number of workers')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device (cuda or cpu)')
-    parser.add_argument('--save_dir', type=str, default='evaluation_results',
+    parser.add_argument('--save_dir', type=str, default='results',
                        help='Directory to save results')
     
     args = parser.parse_args()

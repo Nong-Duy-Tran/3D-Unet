@@ -1,0 +1,35 @@
+seed: 42
+
+data:
+  train_dir: data/train
+  val_dir: data/val
+  use_hdf5: false
+  target_shape: [64, 64, 64]
+  batch_size: 4
+  num_workers: 4
+
+model:
+  name: simple  # simple | unet | resunet
+  in_channels: 1
+  num_classes: 2
+  base_features: 32
+
+training:
+  max_epochs: 10
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
+  accelerator: auto
+  devices: auto
+  precision: 32
+
+logging:
+  wandb:
+    enabled: true
+    project: alzheimer-baseline
+    name: null
+    tags: [baseline, 3d-unet]
+
+checkpoint:
+  dir: checkpoints/lightning
+  monitor: val/loss
+  mode: min
