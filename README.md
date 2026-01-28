@@ -28,7 +28,6 @@ pip install -r requirements.txt
 Convert your MRI data to HDF5 format:
 
 ```bash
-python -m src.baseline.prepare_data --input_dir /path/to/mri/data --output_dir ./data
 ```
 
 

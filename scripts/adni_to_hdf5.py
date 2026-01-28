@@ -11,4 +11,5 @@ import runpy  # noqa: E402
 
 
 if __name__ == "__main__":
-    runpy.run_module("src.baseline.prepare_data", run_name="__main__")
+    target = repo_root / "src" / "baseline" / "adni_to_hdf5.py"
+    runpy.run_path(str(target), run_name="__main__")
