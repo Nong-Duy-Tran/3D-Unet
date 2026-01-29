@@ -23,11 +23,25 @@ class MRIClassificationDataset(Dataset):
         normalize: Whether to normalize data
     """
     
-    def __init__(self, root_dir, target_shape=(64, 64, 64), augment=False, normalize=True):
+    def __init__(
+        self,
+        root_dir,
+        target_shape=(64, 64, 64),
+        augment=False,
+        normalize=True,
+        use_2d=False,
+        num_slices=8,
+        slice_axis=0,
+        slice_strategy="uniform",
+    ):
         self.root_dir = root_dir
         self.target_shape = target_shape
         self.augment = augment
         self.normalize = normalize
+        self.use_2d = use_2d
+        self.num_slices = num_slices
+        self.slice_axis = slice_axis
+        self.slice_strategy = slice_strategy
         
         self.samples = []
         self.labels = []
@@ -78,7 +92,11 @@ class MRIClassificationDataset(Dataset):
             img_data = self._augment(img_data)
         
         # To tensor
-        img_tensor = torch.from_numpy(img_data).float().unsqueeze(0)
+        if self.use_2d:
+            slices = self._extract_slices(img_data)
+            img_tensor = torch.from_numpy(slices).float().unsqueeze(1)  # (S, 1, H, W)
+        else:
+            img_tensor = torch.from_numpy(img_data).float().unsqueeze(0)
         label_tensor = torch.tensor(label, dtype=torch.long)
         
         return img_tensor, label_tensor
@@ -119,6 +137,39 @@ class MRIClassificationDataset(Dataset):
         
         return img
 
+    def _slice_indices(self, size):
+        if self.num_slices <= 1:
+            return [size // 2]
+        if self.slice_strategy == "random":
+            return [random.randint(0, size - 1) for _ in range(self.num_slices)]
+        if self.slice_strategy == "center":
+            center = size // 2
+            half = self.num_slices // 2
+            start = max(0, center - half)
+            indices = list(range(start, start + self.num_slices))
+            return [min(size - 1, max(0, i)) for i in indices]
+        # uniform
+        return [int(round(i)) for i in np.linspace(0, size - 1, self.num_slices)]
+
+    def _extract_slices(self, img):
+        axis = int(self.slice_axis)
+        if axis == 0:
+            size = img.shape[0]
+        elif axis == 1:
+            size = img.shape[1]
+        else:
+            size = img.shape[2]
+        indices = self._slice_indices(size)
+        slices = []
+        for idx in indices:
+            if axis == 0:
+                slices.append(img[idx, :, :])
+            elif axis == 1:
+                slices.append(img[:, idx, :])
+            else:
+                slices.append(img[:, :, idx])
+        return np.stack(slices, axis=0)
+
 
 class MRIClassificationHDF5Dataset(Dataset):
     """
@@ -131,10 +182,23 @@ class MRIClassificationHDF5Dataset(Dataset):
         augment: Whether to apply augmentation
     """
     
-    def __init__(self, file_paths, target_shape=(64, 64, 64), augment=False):
+    def __init__(
+        self,
+        file_paths,
+        target_shape=(64, 64, 64),
+        augment=False,
+        use_2d=False,
+        num_slices=8,
+        slice_axis=0,
+        slice_strategy="uniform",
+    ):
         self.file_paths = file_paths
         self.target_shape = target_shape
         self.augment = augment
+        self.use_2d = use_2d
+        self.num_slices = num_slices
+        self.slice_axis = slice_axis
+        self.slice_strategy = slice_strategy
         self.labels = []
 
         for file_path in self.file_paths:
@@ -177,11 +241,15 @@ class MRIClassificationHDF5Dataset(Dataset):
             if self.augment:
                 img_data = self._augment(img_data)
         
-        img_tensor = torch.from_numpy(img_data).float().unsqueeze(0)
+        if self.use_2d:
+            slices = self._extract_slices(img_data)
+            img_tensor = torch.from_numpy(slices).float().unsqueeze(1)
+        else:
+            img_tensor = torch.from_numpy(img_data).float().unsqueeze(0)
         label_tensor = torch.tensor(label, dtype=torch.long)
         
         return img_tensor, label_tensor
-    
+
     def _augment(self, img):
         """Data augmentation"""
         if random.random() > 0.5:
@@ -192,10 +260,44 @@ class MRIClassificationHDF5Dataset(Dataset):
             img = np.flip(img, axis=2).copy()
         return img
 
+    def _slice_indices(self, size):
+        if self.num_slices <= 1:
+            return [size // 2]
+        if self.slice_strategy == "random":
+            return [random.randint(0, size - 1) for _ in range(self.num_slices)]
+        if self.slice_strategy == "center":
+            center = size // 2
+            half = self.num_slices // 2
+            start = max(0, center - half)
+            indices = list(range(start, start + self.num_slices))
+            return [min(size - 1, max(0, i)) for i in indices]
+        return [int(round(i)) for i in np.linspace(0, size - 1, self.num_slices)]
+
+    def _extract_slices(self, img):
+        axis = int(self.slice_axis)
+        if axis == 0:
+            size = img.shape[0]
+        elif axis == 1:
+            size = img.shape[1]
+        else:
+            size = img.shape[2]
+        indices = self._slice_indices(size)
+        slices = []
+        for idx in indices:
+            if axis == 0:
+                slices.append(img[idx, :, :])
+            elif axis == 1:
+                slices.append(img[:, idx, :])
+            else:
+                slices.append(img[:, :, idx])
+        return np.stack(slices, axis=0)
+
 
 def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
                    target_shape=(64, 64, 64), use_hdf5=False,
-                   weighted_sampler=False):
+                   weighted_sampler=False, use_2d=False,
+                   num_slices=8, slice_axis=0,
+                   slice_strategy_train="random", slice_strategy_val="uniform"):
     """
     Create dataloaders
     
@@ -207,6 +309,11 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         target_shape: Target MRI shape
         use_hdf5: Use HDF5 dataset instead of NIfTI
         weighted_sampler: Use weighted sampler for class imbalance
+        use_2d: Return 2D slices instead of 3D volumes
+        num_slices: Number of slices per volume (2D mode)
+        slice_axis: Axis to slice along (0, 1, 2)
+        slice_strategy_train: Slice sampling strategy for train
+        slice_strategy_val: Slice sampling strategy for val
     
     Returns:
         train_loader, val_loader
@@ -217,11 +324,43 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         train_files = [os.path.join(train_dir, f) for f in os.listdir(train_dir) if f.endswith('.h5')]
         val_files = [os.path.join(val_dir, f) for f in os.listdir(val_dir) if f.endswith('.h5')]
         
-        train_dataset = MRIClassificationHDF5Dataset(train_files, target_shape, augment=True)
-        val_dataset = MRIClassificationHDF5Dataset(val_files, target_shape, augment=False)
+        train_dataset = MRIClassificationHDF5Dataset(
+            train_files,
+            target_shape,
+            augment=True,
+            use_2d=use_2d,
+            num_slices=num_slices,
+            slice_axis=slice_axis,
+            slice_strategy=slice_strategy_train,
+        )
+        val_dataset = MRIClassificationHDF5Dataset(
+            val_files,
+            target_shape,
+            augment=False,
+            use_2d=use_2d,
+            num_slices=num_slices,
+            slice_axis=slice_axis,
+            slice_strategy=slice_strategy_val,
+        )
     else:
-        train_dataset = MRIClassificationDataset(train_dir, target_shape, augment=True)
-        val_dataset = MRIClassificationDataset(val_dir, target_shape, augment=False)
+        train_dataset = MRIClassificationDataset(
+            train_dir,
+            target_shape,
+            augment=True,
+            use_2d=use_2d,
+            num_slices=num_slices,
+            slice_axis=slice_axis,
+            slice_strategy=slice_strategy_train,
+        )
+        val_dataset = MRIClassificationDataset(
+            val_dir,
+            target_shape,
+            augment=False,
+            use_2d=use_2d,
+            num_slices=num_slices,
+            slice_axis=slice_axis,
+            slice_strategy=slice_strategy_val,
+        )
     
     sampler = None
     shuffle = True

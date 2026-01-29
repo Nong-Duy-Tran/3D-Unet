@@ -65,6 +65,53 @@ def evaluate_model(model, dataloader, device):
     return metrics, all_labels, all_preds, all_probs
 
 
+def _model_kwargs(args):
+    kwargs = {
+        "in_channels": 1,
+        "num_classes": 2,
+    }
+    if args.model == "simple":
+        kwargs["base_features"] = args.base_features
+    elif args.model == "vit2d":
+        kwargs.update(
+            {
+                "image_size": args.image_size,
+                "patch_size": args.patch_size,
+                "embed_dim": args.embed_dim,
+                "depth": args.depth,
+                "num_heads": args.num_heads,
+                "mlp_dim": args.mlp_dim,
+                "dropout": args.dropout,
+            }
+        )
+    elif args.model == "swin2d":
+        kwargs.update(
+            {
+                "image_size": args.image_size,
+                "patch_size": args.patch_size,
+                "embed_dim": args.embed_dim,
+                "depth": args.depth,
+                "num_heads": args.num_heads,
+                "window_size": args.window_size,
+                "mlp_dim": args.mlp_dim,
+                "dropout": args.dropout,
+            }
+        )
+    elif args.model == "swin3d":
+        kwargs.update(
+            {
+                "patch_size": args.patch_size,
+                "embed_dim": args.embed_dim,
+                "depth": args.depth,
+                "num_heads": args.num_heads,
+                "window_size": args.window_size,
+                "mlp_dim": args.mlp_dim,
+                "dropout": args.dropout,
+            }
+        )
+    return kwargs
+
+
 def main(args):
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -77,17 +124,17 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         target_shape=tuple(args.target_shape),
-        use_hdf5=args.use_hdf5
+        use_hdf5=args.use_hdf5,
+        use_2d=args.use_2d,
+        num_slices=args.num_slices,
+        slice_axis=args.slice_axis,
+        slice_strategy_train="uniform",
+        slice_strategy_val="uniform",
     )
     
     # Load model
     print("\nLoading model...")
-    model = get_model(
-        model_name=args.model,
-        in_channels=1,
-        num_classes=2,
-        base_features=args.base_features
-    )
+    model = get_model(model_name=args.model, **_model_kwargs(args))
     model = model.to(device)
     
     # Load checkpoint
@@ -121,10 +168,32 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to evaluation data directory')
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet'],
+                       choices=['simple', 'unet', 'resunet', 'vit2d', 'swin2d', 'swin3d'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
+    parser.add_argument('--use_2d', action='store_true',
+                       help='Use 2D slices instead of 3D volumes')
+    parser.add_argument('--num_slices', type=int, default=8,
+                       help='Number of slices per volume (2D mode)')
+    parser.add_argument('--slice_axis', type=int, default=0,
+                       help='Slice axis (0, 1, 2)')
+    parser.add_argument('--image_size', type=int, default=64,
+                       help='Input image size for ViT')
+    parser.add_argument('--patch_size', type=int, default=8,
+                       help='Patch size for ViT')
+    parser.add_argument('--window_size', type=int, default=4,
+                       help='Window size for Swin')
+    parser.add_argument('--embed_dim', type=int, default=256,
+                       help='Embedding dim for ViT')
+    parser.add_argument('--depth', type=int, default=6,
+                       help='ViT depth (num layers)')
+    parser.add_argument('--num_heads', type=int, default=8,
+                       help='ViT num heads')
+    parser.add_argument('--mlp_dim', type=int, default=512,
+                       help='ViT MLP dim')
+    parser.add_argument('--dropout', type=float, default=0.1,
+                       help='ViT dropout')
     parser.add_argument('--use_hdf5', action='store_true',
                        help='Use HDF5 dataset format')
     parser.add_argument('--target_shape', type=int, nargs=3, default=[64, 64, 64],

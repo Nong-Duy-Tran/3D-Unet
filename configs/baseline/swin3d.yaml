@@ -5,33 +5,25 @@ data:
   val_dir: data/val
   use_hdf5: false
   target_shape: [64, 64, 64]
-  batch_size: 4
-  num_workers: 32
+  batch_size: 2
+  num_workers: 16
   weighted_sampler: false
-  use_2d: true
-  num_slices: 8
-  slice_axis: 0
-  slice_strategy_train: random
-  slice_strategy_val: uniform
 
 model:
-  name: vit2d  # simple | unet | resunet | vit2d
+  name: swin3d  # simple | unet | resunet | vit2d | swin2d | swin3d
   in_channels: 1
   num_classes: 2
-  base_features: 32  # simple only
-  f_maps: 64         # unet/resunet only
-  num_levels: 5      # unet/resunet only
-  image_size: 64     # vit2d only
-  patch_size: 8      # vit2d only
-  embed_dim: 256     # vit2d only
-  depth: 6           # vit2d only
-  num_heads: 8       # vit2d only
-  mlp_dim: 512       # vit2d only
-  dropout: 0.1       # vit2d only
+  patch_size: 8
+  embed_dim: 96
+  depth: 4
+  num_heads: 4
+  window_size: 4
+  mlp_dim: 256
+  dropout: 0.1
 
 training:
   max_epochs: 256
-  lr: 1.0e-4
+  lr: 5.0e-5
   weight_decay: 1.0e-4
   accelerator: gpu
   devices: [3]
@@ -52,7 +44,7 @@ training:
     enabled: true
     monitor: val/auc_epoch
     mode: max
-    patience: 12
+    patience: 16
     min_delta: 0.0
 
 logging:

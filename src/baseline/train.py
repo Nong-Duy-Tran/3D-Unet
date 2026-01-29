@@ -63,6 +63,52 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             if cfg_in.model.name == "simple":
                 model_kwargs["base_features"] = cfg_in.model.base_features
                 return model_kwargs
+            if cfg_in.model.name == "vit2d":
+                image_size = getattr(cfg_in.model, "image_size", None)
+                if image_size is None:
+                    image_size = int(cfg_in.data.target_shape[1])
+                model_kwargs.update(
+                    {
+                        "image_size": image_size,
+                        "patch_size": cfg_in.model.patch_size,
+                        "embed_dim": cfg_in.model.embed_dim,
+                        "depth": cfg_in.model.depth,
+                        "num_heads": cfg_in.model.num_heads,
+                        "mlp_dim": cfg_in.model.mlp_dim,
+                        "dropout": cfg_in.model.dropout,
+                    }
+                )
+                return model_kwargs
+            if cfg_in.model.name == "swin2d":
+                image_size = getattr(cfg_in.model, "image_size", None)
+                if image_size is None:
+                    image_size = int(cfg_in.data.target_shape[1])
+                model_kwargs.update(
+                    {
+                        "image_size": image_size,
+                        "patch_size": cfg_in.model.patch_size,
+                        "embed_dim": cfg_in.model.embed_dim,
+                        "depth": cfg_in.model.depth,
+                        "num_heads": cfg_in.model.num_heads,
+                        "window_size": cfg_in.model.window_size,
+                        "mlp_dim": cfg_in.model.mlp_dim,
+                        "dropout": cfg_in.model.dropout,
+                    }
+                )
+                return model_kwargs
+            if cfg_in.model.name == "swin3d":
+                model_kwargs.update(
+                    {
+                        "patch_size": cfg_in.model.patch_size,
+                        "embed_dim": cfg_in.model.embed_dim,
+                        "depth": cfg_in.model.depth,
+                        "num_heads": cfg_in.model.num_heads,
+                        "window_size": cfg_in.model.window_size,
+                        "mlp_dim": cfg_in.model.mlp_dim,
+                        "dropout": cfg_in.model.dropout,
+                    }
+                )
+                return model_kwargs
 
             f_maps = getattr(cfg_in.model, "f_maps", None)
             if f_maps is None:
@@ -307,6 +353,11 @@ def main(cfg: DictConfig) -> None:
         target_shape=tuple(cfg.data.target_shape),
         use_hdf5=cfg.data.use_hdf5,
         weighted_sampler=getattr(cfg.data, "weighted_sampler", False),
+        use_2d=getattr(cfg.data, "use_2d", False),
+        num_slices=getattr(cfg.data, "num_slices", 8),
+        slice_axis=getattr(cfg.data, "slice_axis", 0),
+        slice_strategy_train=getattr(cfg.data, "slice_strategy_train", "random"),
+        slice_strategy_val=getattr(cfg.data, "slice_strategy_val", "uniform"),
     )
 
     class_weights = None
