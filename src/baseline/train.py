@@ -49,7 +49,11 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 model_name=cfg_in.model.name,
                 **self._model_kwargs(cfg_in),
             )
-            self.loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+            loss_cfg = getattr(cfg_in.training, "loss", None)
+            label_smoothing = 0.0
+            if loss_cfg and getattr(loss_cfg, "label_smoothing", None) is not None:
+                label_smoothing = float(loss_cfg.label_smoothing)
+            self.loss_fn = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
             self._val_preds: list[torch.Tensor] = []
             self._val_targets: list[torch.Tensor] = []
             self._val_probs: list[torch.Tensor] = []
@@ -62,6 +66,21 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             }
             if cfg_in.model.name == "simple":
                 model_kwargs["base_features"] = cfg_in.model.base_features
+                return model_kwargs
+            if cfg_in.model.name == "deit2d":
+                image_size = getattr(cfg_in.model, "image_size", None)
+                if image_size is None:
+                    image_size = int(cfg_in.data.target_shape[1])
+                model_kwargs.update(
+                    {
+                        "timm_name": cfg_in.model.timm_name,
+                        "pretrained": cfg_in.model.pretrained,
+                        "image_size": image_size,
+                        "drop_path_rate": cfg_in.model.drop_path_rate,
+                        "attn_drop_rate": cfg_in.model.attn_drop_rate,
+                        "dropout": cfg_in.model.dropout,
+                    }
+                )
                 return model_kwargs
             if cfg_in.model.name == "vit2d":
                 image_size = getattr(cfg_in.model, "image_size", None)
@@ -235,11 +254,22 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 self.log("val/cm_tp", float(cm[1, 1]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
 
         def configure_optimizers(self):
-            optimizer = torch.optim.Adam(
-                self.parameters(),
-                lr=self.cfg.training.lr,
-                weight_decay=self.cfg.training.weight_decay,
-            )
+            optimizer_cfg = getattr(self.cfg.training, "optimizer", None)
+            if optimizer_cfg and getattr(optimizer_cfg, "name", None):
+                optimizer_params = OmegaConf.to_container(optimizer_cfg, resolve=True)
+                optimizer_name = optimizer_params.pop("name")
+                optimizer_cls = getattr(torch.optim, optimizer_name, None)
+                if optimizer_cls is None:
+                    raise ValueError(f"Unknown optimizer: {optimizer_name}")
+                optimizer_params.setdefault("lr", self.cfg.training.lr)
+                optimizer_params.setdefault("weight_decay", self.cfg.training.weight_decay)
+                optimizer = optimizer_cls(self.parameters(), **optimizer_params)
+            else:
+                optimizer = torch.optim.Adam(
+                    self.parameters(),
+                    lr=self.cfg.training.lr,
+                    weight_decay=self.cfg.training.weight_decay,
+                )
             lr_scheduler_cfg = getattr(self.cfg.training, "lr_scheduler", None)
             if not lr_scheduler_cfg or not lr_scheduler_cfg.enabled:
                 return optimizer
@@ -252,6 +282,8 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             scheduler_cfg = OmegaConf.to_container(lr_scheduler_cfg, resolve=True)
             scheduler_cfg.pop("enabled", None)
             monitor = scheduler_cfg.pop("monitor", "val/loss")
+            interval = scheduler_cfg.pop("interval", "epoch")
+            frequency = scheduler_cfg.pop("frequency", 1)
             scheduler_name = scheduler_cfg.pop("name", None)
             if scheduler_name is None:
                 return optimizer
@@ -261,14 +293,22 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             except AttributeError as exc:
                 raise ValueError(f"Unknown lr scheduler: {scheduler_name}") from exc
 
+            if scheduler_name == "OneCycleLR":
+                if "steps_per_epoch" not in scheduler_cfg:
+                    if self.trainer is not None and getattr(self.trainer, "num_training_batches", 0):
+                        scheduler_cfg["steps_per_epoch"] = self.trainer.num_training_batches
+                if "epochs" not in scheduler_cfg:
+                    scheduler_cfg["epochs"] = self.trainer.max_epochs
+                interval = "step"
+
             scheduler = scheduler_cls(optimizer, **scheduler_cfg)
             return {
                 "optimizer": optimizer,
                 "lr_scheduler": {
                     "scheduler": scheduler,
                     "monitor": monitor,
-                    "interval": "epoch",
-                    "frequency": 1,
+                    "interval": interval,
+                    "frequency": frequency,
                 },
             }
 
@@ -356,9 +396,22 @@ def main(cfg: DictConfig) -> None:
         use_2d=getattr(cfg.data, "use_2d", False),
         num_slices=getattr(cfg.data, "num_slices", 8),
         slice_axis=getattr(cfg.data, "slice_axis", 0),
+        resize_2d=getattr(cfg.data, "resize_2d", None),
         slice_strategy_train=getattr(cfg.data, "slice_strategy_train", "random"),
         slice_strategy_val=getattr(cfg.data, "slice_strategy_val", "uniform"),
     )
+
+    lr_scheduler_cfg = getattr(cfg.training, "lr_scheduler", None)
+    if lr_scheduler_cfg and lr_scheduler_cfg.enabled and lr_scheduler_cfg.get("name") == "OneCycleLR":
+        steps = lr_scheduler_cfg.get("steps_per_epoch")
+        if not steps or steps == float("inf"):
+            from omegaconf import open_dict
+            with open_dict(lr_scheduler_cfg):
+                lr_scheduler_cfg["steps_per_epoch"] = len(train_loader)
+        if not lr_scheduler_cfg.get("epochs"):
+            from omegaconf import open_dict
+            with open_dict(lr_scheduler_cfg):
+                lr_scheduler_cfg["epochs"] = cfg.training.max_epochs
 
     class_weights = None
     class_weights_cfg = getattr(cfg.training, "class_weights", None)

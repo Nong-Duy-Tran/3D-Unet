@@ -109,6 +109,17 @@ def _model_kwargs(args):
                 "dropout": args.dropout,
             }
         )
+    elif args.model == "deit2d":
+        kwargs.update(
+            {
+                "timm_name": args.timm_name,
+                "pretrained": False,
+                "image_size": args.image_size,
+                "drop_path_rate": args.drop_path_rate,
+                "attn_drop_rate": args.attn_drop_rate,
+                "dropout": args.dropout,
+            }
+        )
     return kwargs
 
 
@@ -128,6 +139,7 @@ def main(args):
         use_2d=args.use_2d,
         num_slices=args.num_slices,
         slice_axis=args.slice_axis,
+        resize_2d=args.resize_2d,
         slice_strategy_train="uniform",
         slice_strategy_val="uniform",
     )
@@ -168,7 +180,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to evaluation data directory')
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet', 'vit2d', 'swin2d', 'swin3d'],
+                       choices=['simple', 'unet', 'resunet', 'vit2d', 'swin2d', 'swin3d', 'deit2d'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
@@ -178,10 +190,18 @@ if __name__ == "__main__":
                        help='Number of slices per volume (2D mode)')
     parser.add_argument('--slice_axis', type=int, default=0,
                        help='Slice axis (0, 1, 2)')
+    parser.add_argument('--resize_2d', type=int, nargs=2, default=None,
+                       help='Resize 2D slices to (H W)')
     parser.add_argument('--image_size', type=int, default=64,
                        help='Input image size for ViT')
     parser.add_argument('--patch_size', type=int, default=8,
                        help='Patch size for ViT')
+    parser.add_argument('--timm_name', type=str, default='deit_base_patch16_224.fb_in1k',
+                       help='timm model name for DeiT')
+    parser.add_argument('--drop_path_rate', type=float, default=0.2,
+                       help='DeiT drop path rate')
+    parser.add_argument('--attn_drop_rate', type=float, default=0.1,
+                       help='DeiT attention drop rate')
     parser.add_argument('--window_size', type=int, default=4,
                        help='Window size for Swin')
     parser.add_argument('--embed_dim', type=int, default=256,

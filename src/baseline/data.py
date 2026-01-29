@@ -33,6 +33,7 @@ class MRIClassificationDataset(Dataset):
         num_slices=8,
         slice_axis=0,
         slice_strategy="uniform",
+        resize_2d=None,
     ):
         self.root_dir = root_dir
         self.target_shape = target_shape
@@ -42,6 +43,7 @@ class MRIClassificationDataset(Dataset):
         self.num_slices = num_slices
         self.slice_axis = slice_axis
         self.slice_strategy = slice_strategy
+        self.resize_2d = resize_2d
         
         self.samples = []
         self.labels = []
@@ -168,7 +170,15 @@ class MRIClassificationDataset(Dataset):
                 slices.append(img[:, idx, :])
             else:
                 slices.append(img[:, :, idx])
-        return np.stack(slices, axis=0)
+        slices = np.stack(slices, axis=0)
+        if self.resize_2d is not None:
+            target_h, target_w = self.resize_2d
+            zoom_factors = [target_h / slices.shape[1], target_w / slices.shape[2]]
+            resized = []
+            for s in slices:
+                resized.append(zoom(s, zoom_factors, order=1))
+            slices = np.stack(resized, axis=0)
+        return slices
 
 
 class MRIClassificationHDF5Dataset(Dataset):
@@ -191,6 +201,7 @@ class MRIClassificationHDF5Dataset(Dataset):
         num_slices=8,
         slice_axis=0,
         slice_strategy="uniform",
+        resize_2d=None,
     ):
         self.file_paths = file_paths
         self.target_shape = target_shape
@@ -199,6 +210,7 @@ class MRIClassificationHDF5Dataset(Dataset):
         self.num_slices = num_slices
         self.slice_axis = slice_axis
         self.slice_strategy = slice_strategy
+        self.resize_2d = resize_2d
         self.labels = []
 
         for file_path in self.file_paths:
@@ -290,13 +302,21 @@ class MRIClassificationHDF5Dataset(Dataset):
                 slices.append(img[:, idx, :])
             else:
                 slices.append(img[:, :, idx])
-        return np.stack(slices, axis=0)
+        slices = np.stack(slices, axis=0)
+        if self.resize_2d is not None:
+            target_h, target_w = self.resize_2d
+            zoom_factors = [target_h / slices.shape[1], target_w / slices.shape[2]]
+            resized = []
+            for s in slices:
+                resized.append(zoom(s, zoom_factors, order=1))
+            slices = np.stack(resized, axis=0)
+        return slices
 
 
 def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
                    target_shape=(64, 64, 64), use_hdf5=False,
                    weighted_sampler=False, use_2d=False,
-                   num_slices=8, slice_axis=0,
+                   num_slices=8, slice_axis=0, resize_2d=None,
                    slice_strategy_train="random", slice_strategy_val="uniform"):
     """
     Create dataloaders
@@ -314,6 +334,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         slice_axis: Axis to slice along (0, 1, 2)
         slice_strategy_train: Slice sampling strategy for train
         slice_strategy_val: Slice sampling strategy for val
+        resize_2d: Optional (H, W) to resize 2D slices
     
     Returns:
         train_loader, val_loader
@@ -332,6 +353,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             num_slices=num_slices,
             slice_axis=slice_axis,
             slice_strategy=slice_strategy_train,
+            resize_2d=resize_2d,
         )
         val_dataset = MRIClassificationHDF5Dataset(
             val_files,
@@ -341,6 +363,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             num_slices=num_slices,
             slice_axis=slice_axis,
             slice_strategy=slice_strategy_val,
+            resize_2d=resize_2d,
         )
     else:
         train_dataset = MRIClassificationDataset(
@@ -351,6 +374,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             num_slices=num_slices,
             slice_axis=slice_axis,
             slice_strategy=slice_strategy_train,
+            resize_2d=resize_2d,
         )
         val_dataset = MRIClassificationDataset(
             val_dir,
@@ -360,6 +384,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             num_slices=num_slices,
             slice_axis=slice_axis,
             slice_strategy=slice_strategy_val,
+            resize_2d=resize_2d,
         )
     
     sampler = None

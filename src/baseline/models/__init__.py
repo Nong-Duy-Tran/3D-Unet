@@ -4,6 +4,7 @@ from .unet3d_classifier import UNet3DClassifier
 from .vit2d_classifier import ViT2DClassifier
 from .swin2d_classifier import Swin2DClassifier
 from .swin3d_classifier import Swin3DClassifier
+from .deit2d_classifier import DeiT2DClassifier
 
 __all__ = [
     "get_model",
@@ -13,4 +14,5 @@ __all__ = [
     "ViT2DClassifier",
     "Swin2DClassifier",
     "Swin3DClassifier",
+    "DeiT2DClassifier",
 ]

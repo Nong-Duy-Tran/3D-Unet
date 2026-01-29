@@ -3,6 +3,7 @@ from .unet3d_classifier import UNet3DClassifier, default_config as unet_default_
 from .vit2d_classifier import ViT2DClassifier, default_config as vit2d_default_config
 from .swin2d_classifier import Swin2DClassifier, default_config as swin2d_default_config
 from .swin3d_classifier import Swin3DClassifier, default_config as swin3d_default_config
+from .deit2d_classifier import DeiT2DClassifier, default_config as deit2d_default_config
 
 
 def get_model(model_name="simple", **kwargs):
@@ -18,6 +19,8 @@ def get_model(model_name="simple", **kwargs):
         return Swin2DClassifier(**kwargs)
     if model_name == "swin3d":
         return Swin3DClassifier(**kwargs)
+    if model_name == "deit2d":
+        return DeiT2DClassifier(**kwargs)
     raise ValueError(f"Unknown model: {model_name}")
 
 
@@ -34,4 +37,6 @@ def get_model_config(model_name: str):
         return swin2d_default_config()
     if model_name == "swin3d":
         return swin3d_default_config()
+    if model_name == "deit2d":
+        return deit2d_default_config()
     raise ValueError(f"Unknown model: {model_name}")
