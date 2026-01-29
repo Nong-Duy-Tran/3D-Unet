@@ -135,8 +135,10 @@ def build_id_index(adni_root: Path) -> tuple[dict[str, Path], set[str]]:
     return mapping, duplicates
 
 
-def load_nifti(path: Path) -> np.ndarray:
+def load_nifti(path: Path, reorient_ras: bool = True) -> np.ndarray:
     nii_img = nib.load(str(path))
+    if reorient_ras:
+        nii_img = nib.as_closest_canonical(nii_img)
     img_data = nii_img.get_fdata()
     if img_data.ndim == 4:
         img_data = img_data[..., 0]
@@ -150,6 +152,27 @@ def write_hdf5(output_path: Path, img_data: np.ndarray, label: int, meta: dict[s
         f.create_dataset("label", data=int(label))
         for key, value in meta.items():
             f.attrs[key] = value
+
+
+def normalize_volume(img: np.ndarray, mode: str = "minmax", eps: float = 1e-6) -> np.ndarray:
+    mode = normalize_key(mode)
+    img = img.astype(np.float32, copy=False)
+    if mode in {"none", "off", "no"}:
+        return img
+    if mode == "minmax":
+        vmin = float(np.min(img))
+        vmax = float(np.max(img))
+        denom = vmax - vmin
+        if denom > eps:
+            return (img - vmin) / denom
+        return img * 0.0
+    if mode == "zscore":
+        mean = float(np.mean(img))
+        std = float(np.std(img))
+        if std > eps:
+            return (img - mean) / std
+        return img - mean
+    raise ValueError(f"Unknown normalize mode: {mode}")
 
 
 def resolve_nifti_path(

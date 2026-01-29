@@ -33,6 +33,7 @@ from src.helpers.adni_hdf5 import (
     load_label_map,
     load_nifti,
     normalize_key,
+    normalize_volume,
     parse_int_map,
     parse_ratio_list,
     parse_str_map,
@@ -82,6 +83,24 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1337, help="Random seed for split")
     parser.add_argument("--label-map", default="", help="Map labels, e.g. CN=0,AD=1,MCI=2")
     parser.add_argument("--label-map-json", default=None, help="Path to JSON label map")
+    parser.add_argument(
+        "--normalize-mode",
+        default="zscore",
+        help="Normalization: minmax | zscore | none",
+    )
+    parser.add_argument(
+        "--normalize-eps",
+        type=float,
+        default=1e-6,
+        help="Epsilon for normalization stability",
+    )
+    parser.add_argument(
+        "--no-reorient-ras",
+        dest="reorient_ras",
+        action="store_false",
+        help="Disable reorientation to RAS+ before saving.",
+    )
+    parser.set_defaults(reorient_ras=True)
     parser.add_argument(
         "--source-label-map",
         default=DEFAULT_SOURCE_LABEL_MAP,
@@ -356,7 +375,8 @@ def main() -> None:
             written += 1
             continue
 
-        img_data = load_nifti(nifti_path)
+        img_data = load_nifti(nifti_path, reorient_ras=args.reorient_ras)
+        img_data = normalize_volume(img_data, args.normalize_mode, args.normalize_eps)
         meta = {
             "source_path": str(nifti_path),
             "label_raw": str(rec["label_raw"]),
@@ -364,6 +384,8 @@ def main() -> None:
             "source_csv": str(rec["source_csv"]),
             "source_key": str(rec["source_key"]),
         }
+        meta["normalize_mode"] = str(args.normalize_mode)
+        meta["reorient_ras"] = str(bool(args.reorient_ras))
         if rec.get("subject_id"):
             meta["subject_id"] = str(rec["subject_id"])
         write_hdf5(output_path, img_data, label, meta)
