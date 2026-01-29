@@ -160,7 +160,7 @@ def main(args):
     
     # Scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10, verbose=True
+        optimizer, mode='min', factor=0.5, patience=10
     )
     
     # Training loop
@@ -168,6 +168,7 @@ def main(args):
     print("=" * 60)
     
     best_val_loss = float('inf')
+    best_val_acc = 0
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
     
@@ -209,10 +210,10 @@ def main(args):
         val_accs.append(val_metrics['accuracy'])
         
         # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_accs[-1] >= best_val_acc:
+            best_val_acc = val_accs[-1]
             save_checkpoint(
-                model, optimizer, epoch, best_val_loss,
+                model, optimizer, epoch, best_val_loss, best_val_acc,
                 os.path.join(args.checkpoint_dir, 'best_model.pth')
             )
             
