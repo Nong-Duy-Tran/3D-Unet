@@ -6,6 +6,7 @@ from typing import Any
 import hydra
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
+import torch
 
 from src.baseline.data import get_dataloaders
 from src.baseline.models import get_model
@@ -21,7 +22,14 @@ def _resolve_paths(cfg: DictConfig) -> tuple[Path, Path, Path]:
     return train_dir, val_dir, ckpt_dir
 
 
-def _make_lightning_module(cfg: DictConfig):
+def _compute_class_weights(labels: list[int], num_classes: int) -> torch.Tensor:
+    counts = torch.bincount(torch.tensor(labels, dtype=torch.long), minlength=num_classes).float()
+    counts = torch.clamp(counts, min=1.0)
+    weights = counts.sum() / (counts * num_classes)
+    return weights
+
+
+def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None" = None):
     try:
         import lightning.pytorch as pl
         from lightning.pytorch.utilities.types import STEP_OUTPUT
@@ -32,18 +40,40 @@ def _make_lightning_module(cfg: DictConfig):
     from torch import nn
 
     class LitClassifier(pl.LightningModule):
-        def __init__(self, cfg_in: DictConfig):
+        def __init__(self, cfg_in: DictConfig, class_weights: "torch.Tensor | None" = None):
             super().__init__()
             self.cfg = cfg_in
             self.save_hyperparameters(OmegaConf.to_container(cfg_in, resolve=True))
 
             self.model = get_model(
                 model_name=cfg_in.model.name,
-                in_channels=cfg_in.model.in_channels,
-                num_classes=cfg_in.model.num_classes,
-                base_features=cfg_in.model.base_features,
+                **self._model_kwargs(cfg_in),
             )
-            self.loss_fn = nn.CrossEntropyLoss()
+            self.loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+            self._val_preds: list[torch.Tensor] = []
+            self._val_targets: list[torch.Tensor] = []
+            self._val_probs: list[torch.Tensor] = []
+
+        @staticmethod
+        def _model_kwargs(cfg_in: DictConfig) -> dict[str, Any]:
+            model_kwargs: dict[str, Any] = {
+                "in_channels": cfg_in.model.in_channels,
+                "num_classes": cfg_in.model.num_classes,
+            }
+            if cfg_in.model.name == "simple":
+                model_kwargs["base_features"] = cfg_in.model.base_features
+                return model_kwargs
+
+            f_maps = getattr(cfg_in.model, "f_maps", None)
+            if f_maps is None:
+                f_maps = getattr(cfg_in.model, "base_features", 64)
+            model_kwargs["f_maps"] = f_maps
+
+            num_levels = getattr(cfg_in.model, "num_levels", None)
+            if num_levels is not None:
+                model_kwargs["num_levels"] = num_levels
+
+            return model_kwargs
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.model(x)
@@ -84,38 +114,131 @@ def _make_lightning_module(cfg: DictConfig):
             acc = (preds == y).float().mean()
             f1 = self._batch_f1(preds, y)
             auc = self._batch_auc(probs, y)
-            self.log(f"{stage}/loss", loss, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
-            self.log(f"{stage}/acc", acc, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
-            self.log(f"{stage}/f1", f1, prog_bar=False, on_step=True, on_epoch=False, sync_dist=True)
+            # Log epoch metrics only to keep output clean.
+            self.log(f"{stage}/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/acc", acc, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/f1", f1, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             if auc is not None:
-                self.log(f"{stage}/auc", auc, prog_bar=False, on_step=True, on_epoch=False, sync_dist=True)
+                self.log(f"{stage}/auc", auc, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             return loss
 
         def training_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
             return self._shared_step(batch, stage="train")
 
         def validation_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
-            return self._shared_step(batch, stage="val")
+            x, y = batch
+            logits = self.forward(x)
+            loss = self.loss_fn(logits, y)
+            probs = torch.softmax(logits, dim=1)
+            preds = logits.argmax(dim=1)
+            acc = (preds == y).float().mean()
+            f1 = self._batch_f1(preds, y)
+            auc = self._batch_auc(probs, y)
+            self.log("val/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/acc", acc, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/f1", f1, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            if auc is not None:
+                self.log("val/auc", auc, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+
+            self._val_preds.append(preds.detach().cpu())
+            self._val_targets.append(y.detach().cpu())
+            if probs.shape[-1] == 2:
+                self._val_probs.append(probs[:, 1].detach().cpu())
+            return loss
+
+        def on_validation_epoch_start(self) -> None:
+            self._val_preds = []
+            self._val_targets = []
+            self._val_probs = []
+
+        def on_validation_epoch_end(self) -> None:
+            if not self._val_preds:
+                return
+            try:
+                from sklearn.metrics import (
+                    accuracy_score,
+                    precision_score,
+                    recall_score,
+                    f1_score,
+                    roc_auc_score,
+                    confusion_matrix,
+                )
+            except Exception:
+                return
+
+            preds = torch.cat(self._val_preds).numpy()
+            targets = torch.cat(self._val_targets).numpy()
+            probs = torch.cat(self._val_probs).numpy() if self._val_probs else None
+
+            precision = precision_score(targets, preds, zero_division=0)
+            recall = recall_score(targets, preds, zero_division=0)
+            f1_epoch = f1_score(targets, preds, zero_division=0)
+            acc_epoch = accuracy_score(targets, preds)
+            auc_epoch = roc_auc_score(targets, probs) if probs is not None and len(set(targets.tolist())) > 1 else 0.0
+            cm = confusion_matrix(targets, preds, labels=[0, 1])
+
+            self.log("val/acc_epoch", acc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/precision", precision, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/recall", recall, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/f1_epoch", f1_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("val/auc_epoch", auc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            if cm.size == 4:
+                self.log("val/cm_tn", float(cm[0, 0]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+                self.log("val/cm_fp", float(cm[0, 1]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+                self.log("val/cm_fn", float(cm[1, 0]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+                self.log("val/cm_tp", float(cm[1, 1]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
 
         def configure_optimizers(self):
-            return torch.optim.Adam(
+            optimizer = torch.optim.Adam(
                 self.parameters(),
                 lr=self.cfg.training.lr,
                 weight_decay=self.cfg.training.weight_decay,
             )
+            lr_scheduler_cfg = getattr(self.cfg.training, "lr_scheduler", None)
+            if not lr_scheduler_cfg or not lr_scheduler_cfg.enabled:
+                return optimizer
 
-    return LitClassifier(cfg)
+            try:
+                import torch.optim.lr_scheduler as lr_schedulers
+            except Exception as exc:  # pragma: no cover
+                raise ImportError("torch.optim.lr_scheduler is required for LR scheduling") from exc
+
+            scheduler_cfg = OmegaConf.to_container(lr_scheduler_cfg, resolve=True)
+            scheduler_cfg.pop("enabled", None)
+            monitor = scheduler_cfg.pop("monitor", "val/loss")
+            scheduler_name = scheduler_cfg.pop("name", None)
+            if scheduler_name is None:
+                return optimizer
+
+            try:
+                scheduler_cls = getattr(lr_schedulers, scheduler_name)
+            except AttributeError as exc:
+                raise ValueError(f"Unknown lr scheduler: {scheduler_name}") from exc
+
+            scheduler = scheduler_cls(optimizer, **scheduler_cfg)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": monitor,
+                    "interval": "epoch",
+                    "frequency": 1,
+                },
+            }
+
+    return LitClassifier(cfg, class_weights=class_weights)
 
 
 def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
     try:
         import lightning.pytorch as pl
-        from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+        from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, TQDMProgressBar
         from lightning.pytorch.loggers import WandbLogger
     except Exception as exc:  # pragma: no cover
         raise ImportError("lightning is required. Install it, then run again.") from exc
 
     callbacks = [
+        TQDMProgressBar(refresh_rate=10, leave=False),
         ModelCheckpoint(
             dirpath=str(ckpt_dir),
             filename="baseline-{epoch:03d}",
@@ -157,7 +280,7 @@ def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
         logger=logger,
         callbacks=callbacks,
         log_every_n_steps=1,
-        enable_progress_bar=False,
+        enable_progress_bar=True,
     )
     return trainer
 
@@ -183,9 +306,23 @@ def main(cfg: DictConfig) -> None:
         num_workers=cfg.data.num_workers,
         target_shape=tuple(cfg.data.target_shape),
         use_hdf5=cfg.data.use_hdf5,
+        weighted_sampler=getattr(cfg.data, "weighted_sampler", False),
     )
 
-    model = _make_lightning_module(cfg)
+    class_weights = None
+    class_weights_cfg = getattr(cfg.training, "class_weights", None)
+    if class_weights_cfg and class_weights_cfg.enabled:
+        values = class_weights_cfg.get("values") if hasattr(class_weights_cfg, "get") else None
+        if values is not None:
+            class_weights = torch.tensor(values, dtype=torch.float)
+        else:
+            labels = getattr(train_loader.dataset, "labels", None)
+            if not labels:
+                raise ValueError("class_weights enabled but dataset labels are unavailable.")
+            class_weights = _compute_class_weights(labels, cfg.model.num_classes)
+        print(f"Class weights: {class_weights.tolist()}")
+
+    model = _make_lightning_module(cfg, class_weights=class_weights)
     trainer = _make_trainer(cfg, ckpt_dir)
     trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 

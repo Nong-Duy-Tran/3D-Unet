@@ -7,7 +7,7 @@ import h5py
 import torch
 import numpy as np
 import nibabel as nib
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from scipy.ndimage import zoom, rotate
 import random
 
@@ -135,7 +135,15 @@ class MRIClassificationHDF5Dataset(Dataset):
         self.file_paths = file_paths
         self.target_shape = target_shape
         self.augment = augment
-        
+        self.labels = []
+
+        for file_path in self.file_paths:
+            try:
+                with h5py.File(file_path, 'r') as f:
+                    self.labels.append(int(f['label'][()]))
+            except Exception:
+                self.labels.append(0)
+
         print(f"Loaded {len(self.file_paths)} HDF5 files")
     
     def __len__(self):
@@ -186,7 +194,8 @@ class MRIClassificationHDF5Dataset(Dataset):
 
 
 def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
-                   target_shape=(64, 64, 64), use_hdf5=False):
+                   target_shape=(64, 64, 64), use_hdf5=False,
+                   weighted_sampler=False):
     """
     Create dataloaders
     
@@ -197,6 +206,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         num_workers: Number of workers
         target_shape: Target MRI shape
         use_hdf5: Use HDF5 dataset instead of NIfTI
+        weighted_sampler: Use weighted sampler for class imbalance
     
     Returns:
         train_loader, val_loader
@@ -213,10 +223,28 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         train_dataset = MRIClassificationDataset(train_dir, target_shape, augment=True)
         val_dataset = MRIClassificationDataset(val_dir, target_shape, augment=False)
     
+    sampler = None
+    shuffle = True
+    if weighted_sampler:
+        if not hasattr(train_dataset, "labels") or not train_dataset.labels:
+            raise ValueError("Weighted sampler requires dataset labels to be available.")
+        labels = np.array(train_dataset.labels, dtype=np.int64)
+        class_counts = np.bincount(labels, minlength=2).astype(np.float64)
+        class_counts[class_counts == 0] = 1.0
+        class_weights = 1.0 / class_counts
+        sample_weights = class_weights[labels]
+        sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(sample_weights, dtype=torch.double),
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
+        shuffle = False
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=True
     )

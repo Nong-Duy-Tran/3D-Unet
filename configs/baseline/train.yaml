@@ -7,25 +7,40 @@ data:
   target_shape: [64, 64, 64]
   batch_size: 4
   num_workers: 32
+  weighted_sampler: false
 
 model:
-  name: simple  # simple | unet | resunet
+  name: resunet  # simple | unet | resunet
   in_channels: 1
   num_classes: 2
-  base_features: 32
+  base_features: 32  # simple only
+  f_maps: 64         # unet/resunet only
+  num_levels: 5      # unet/resunet only
 
 training:
-  max_epochs: 10
+  max_epochs: 256
   lr: 1.0e-4
   weight_decay: 1.0e-5
   accelerator: gpu
   devices: [3]
   precision: 32
+  class_weights:
+    enabled: true
+    values: null
+  lr_scheduler:
+    enabled: true
+    name: ReduceLROnPlateau
+    monitor: val/auc_epoch
+    mode: max
+    factor: 0.5
+    patience: 3
+    threshold: 1.0e-3
+    min_lr: 1.0e-6
   early_stopping:
     enabled: true
-    monitor: val/loss
-    mode: min
-    patience: 5
+    monitor: val/auc_epoch
+    mode: max
+    patience: 16
     min_delta: 0.0
 
 logging:
@@ -37,5 +52,5 @@ logging:
 
 checkpoint:
   dir: checkpoints/lightning
-  monitor: val/loss
-  mode: min
+  monitor: val/auc_epoch
+  mode: max
