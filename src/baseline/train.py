@@ -48,14 +48,47 @@ def _make_lightning_module(cfg: DictConfig):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.model(x)
 
+        def _batch_f1(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+            # Binary F1 for batch; returns 0 if no positive predictions/targets.
+            preds = preds.view(-1).long()
+            targets = targets.view(-1).long()
+            tp = ((preds == 1) & (targets == 1)).sum().float()
+            fp = ((preds == 1) & (targets == 0)).sum().float()
+            fn = ((preds == 0) & (targets == 1)).sum().float()
+            denom = (2 * tp + fp + fn)
+            if denom == 0:
+                return torch.tensor(0.0, device=preds.device)
+            return (2 * tp) / denom
+
+        def _batch_auc(self, probs: torch.Tensor, targets: torch.Tensor) -> float | None:
+            # Binary AUC for batch; returns None if undefined.
+            if probs.shape[-1] != 2:
+                return None
+            try:
+                from sklearn.metrics import roc_auc_score
+            except Exception:
+                return None
+            y_true = targets.detach().cpu().numpy()
+            y_score = probs[:, 1].detach().cpu().numpy()
+            # AUC is undefined if only one class present.
+            if len(set(y_true.tolist())) < 2:
+                return None
+            return float(roc_auc_score(y_true, y_score))
+
         def _shared_step(self, batch: Any, stage: str) -> STEP_OUTPUT:
             x, y = batch
             logits = self.forward(x)
             loss = self.loss_fn(logits, y)
+            probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
             acc = (preds == y).float().mean()
-            self.log(f"{stage}/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-            self.log(f"{stage}/acc", acc, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            f1 = self._batch_f1(preds, y)
+            auc = self._batch_auc(probs, y)
+            self.log(f"{stage}/loss", loss, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
+            self.log(f"{stage}/acc", acc, prog_bar=True, on_step=True, on_epoch=False, sync_dist=True)
+            self.log(f"{stage}/f1", f1, prog_bar=False, on_step=True, on_epoch=False, sync_dist=True)
+            if auc is not None:
+                self.log(f"{stage}/auc", auc, prog_bar=False, on_step=True, on_epoch=False, sync_dist=True)
             return loss
 
         def training_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
@@ -77,7 +110,7 @@ def _make_lightning_module(cfg: DictConfig):
 def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
     try:
         import lightning.pytorch as pl
-        from lightning.pytorch.callbacks import ModelCheckpoint
+        from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
         from lightning.pytorch.loggers import WandbLogger
     except Exception as exc:  # pragma: no cover
         raise ImportError("lightning is required. Install it, then run again.") from exc
@@ -92,6 +125,16 @@ def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
             save_last=True,
         )
     ]
+    if getattr(cfg.training, "early_stopping", None) and cfg.training.early_stopping.enabled:
+        callbacks.append(
+            EarlyStopping(
+                monitor=cfg.training.early_stopping.monitor,
+                mode=cfg.training.early_stopping.mode,
+                patience=cfg.training.early_stopping.patience,
+                min_delta=cfg.training.early_stopping.min_delta,
+                verbose=True,
+            )
+        )
 
     logger = None
     if cfg.logging.wandb.enabled:
@@ -114,6 +157,7 @@ def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
         logger=logger,
         callbacks=callbacks,
         log_every_n_steps=1,
+        enable_progress_bar=False,
     )
     return trainer
 

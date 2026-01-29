@@ -44,3 +44,9 @@ Thumbs.db
 
 # Notebooks
 # notebooks/
+
+# Lightning
+lightning_logs/*
+
+# outputs
+outputs/*

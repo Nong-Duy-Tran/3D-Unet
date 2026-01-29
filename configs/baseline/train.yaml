@@ -6,7 +6,7 @@ data:
   use_hdf5: false
   target_shape: [64, 64, 64]
   batch_size: 4
-  num_workers: 4
+  num_workers: 32
 
 model:
   name: simple  # simple | unet | resunet
@@ -18,9 +18,15 @@ training:
   max_epochs: 10
   lr: 1.0e-4
   weight_decay: 1.0e-5
-  accelerator: auto
-  devices: auto
+  accelerator: gpu
+  devices: [3]
   precision: 32
+  early_stopping:
+    enabled: true
+    monitor: val/loss
+    mode: min
+    patience: 5
+    min_delta: 0.0
 
 logging:
   wandb:
