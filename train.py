@@ -135,12 +135,23 @@ def main(args):
     
     # Model
     print("\nInitializing model...")
-    model = get_model(
-        model_name=args.model,
-        in_channels=1,
-        num_classes=2,
-        base_features=args.base_features
-    )
+    model_kwargs = {
+        'in_channels': 1,
+        'num_classes': 2,
+    }
+    
+    # Add model-specific parameters
+    if args.model == 'swinunet':
+        # SwinUNet uses different parameters
+        model_kwargs['feature_size'] = args.base_features
+        model_kwargs['depths'] = (2, 2, 2, 2)
+        model_kwargs['num_heads'] = (3, 6, 12, 24)
+        model_kwargs['window_size'] = 7
+    else:
+        # CNN models use base_features
+        model_kwargs['base_features'] = args.base_features
+    
+    model = get_model(model_name=args.model, **model_kwargs)
     model = model.to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
@@ -252,7 +263,7 @@ if __name__ == "__main__":
     
     # Model
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet'],
+                       choices=['simple', 'unet', 'resunet', 'swinunet'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
@@ -270,7 +281,7 @@ if __name__ == "__main__":
                        help='Use class weights for imbalanced data')
     
     # Data processing
-    parser.add_argument('--target_shape', type=int, nargs=3, default=[64, 64, 64],
+    parser.add_argument('--target_shape', type=int, nargs=3, default=[96, 96, 96],
                        help='Target MRI shape (D H W)')
     parser.add_argument('--num_workers', type=int, default=4,
                        help='Number of data loading workers')

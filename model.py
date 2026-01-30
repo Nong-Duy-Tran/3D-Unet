@@ -5,7 +5,7 @@ Adapts the segmentation U-Net for classification tasks
 import torch
 import torch.nn as nn
 from pytorch3dunet.unet3d.model import UNet3D, ResidualUNet3D
-
+from monai.networks.nets import SwinUNETR
 
 class UNet3DClassifier(nn.Module):
     """
@@ -160,12 +160,112 @@ class SimpleUNet3DClassifier(nn.Module):
         return logits
 
 
+class SwinUNet3DClassifier(nn.Module):
+    """
+    Swin-UNETR adapted for classification
+    Uses transformer-based Swin-UNETR encoder + global pooling + classifier head
+    
+    Args:
+        in_channels: Number of input channels (default: 1 for MRI)
+        num_classes: Number of output classes (default: 2 for binary)
+        feature_size: Base feature size (default: 48)
+        depths: Depths of each Swin Transformer layer (default: (2, 2, 2, 2))
+        num_heads: Number of attention heads in each layer (default: (3, 6, 12, 24))
+        window_size: Window size for Swin Transformer (default: 7)
+        drop_rate: Dropout rate (default: 0.0)
+        attn_drop_rate: Attention dropout rate (default: 0.0)
+    """
+    
+    def __init__(self, img_size=(96, 96, 96), in_channels=1, num_classes=2, 
+                 feature_size=48, depths=(2, 2, 2, 2), num_heads=(3, 6, 12, 24),
+                 drop_rate=0.0, attn_drop_rate=0.0, window_size=7, **kwargs):
+        super(SwinUNet3DClassifier, self).__init__()
+        
+        # Swin-UNETR backbone for feature extraction
+        self.swin_unetr = SwinUNETR(
+            in_channels=in_channels,
+            out_channels=num_classes,  # Dummy, we won't use the decoder output
+            feature_size=feature_size,
+            depths=depths,
+            num_heads=num_heads,
+            window_size=window_size,
+            drop_rate=drop_rate,
+            attn_drop_rate=attn_drop_rate,
+            use_checkpoint=False,  # Set to True if memory is a concern
+        )
+        
+        # Calculate bottleneck features
+        # For Swin-UNETR, the bottleneck has feature_size * (2^(len(depths)-1)) channels
+        bottleneck_features = feature_size * (2 ** (len(depths) - 1))
+        
+        # Store feature_size for later use
+        self.feature_size = feature_size
+        self.depths = depths
+        
+        # Global average pooling
+        self.global_pool = nn.AdaptiveAvgPool3d(1)
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.5),
+            nn.Linear(bottleneck_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes)
+        )
+    
+    def forward(self, x):
+        """
+        Forward pass using Swin Transformer encoder for classification
+        
+        Args:
+            x: Input tensor (batch_size, channels, depth, height, width)
+        
+        Returns:
+            logits: Class logits (batch_size, num_classes)
+        """
+        # Extract features using Swin-UNETR encoder
+        # Access the encoder path to get deep features
+        hidden_states_out = self.swin_unetr.swinViT(x, self.swin_unetr.normalize)
+        
+        # Get the bottleneck features (last encoder output)
+        # hidden_states_out is a list of feature maps from different stages
+        bottleneck_features = hidden_states_out[-1]
+        
+        # Global pooling
+        pooled = self.global_pool(bottleneck_features)
+        pooled_flat = torch.flatten(pooled, 1)
+        
+        # Dynamically adjust classifier if needed on first forward pass
+        if not hasattr(self, '_classifier_adjusted'):
+            actual_features = pooled_flat.shape[1]
+            expected_features = self.feature_size * (2 ** (len(self.depths) - 1))
+            if actual_features != expected_features:
+                # Rebuild classifier with correct input size
+                self.classifier = nn.Sequential(
+                    nn.Dropout(0.5),
+                    nn.Linear(actual_features, 256),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(0.3),
+                    nn.Linear(256, 2)  # num_classes
+                )
+                if pooled.is_cuda:
+                    self.classifier = self.classifier.cuda()
+            self._classifier_adjusted = True
+        
+        # Classify
+        logits = self.classifier(pooled_flat)
+        
+        return logits
+
+
 def get_model(model_name='simple', **kwargs):
     """
     Factory function to create classification model
     
     Args:
-        model_name: 'simple', 'unet', or 'resunet'
+        model_name: 'simple', 'unet', 'resunet', or 'swinunet'
         **kwargs: Additional arguments for model
     
     Returns:
@@ -177,8 +277,10 @@ def get_model(model_name='simple', **kwargs):
         return UNet3DClassifier(use_residual=False, **kwargs)
     elif model_name == 'resunet':
         return UNet3DClassifier(use_residual=True, **kwargs)
+    elif model_name == 'swinunet':
+        return SwinUNet3DClassifier(**kwargs)
     else:
-        raise ValueError(f"Unknown model: {model_name}")
+        raise ValueError(f"Unknown model: {model_name}. Choose from: simple, unet, resunet, swinunet")
 
 
 if __name__ == "__main__":
@@ -206,3 +308,19 @@ if __name__ == "__main__":
     
     total_params = sum(p.numel() for p in model_unet.parameters())
     print(f"Total parameters (UNet3D): {total_params:,}")
+
+    print("\nTesting SwinUNet3D Classifier...")
+    model_swin = SwinUNet3DClassifier(
+        in_channels=1, 
+        num_classes=2, 
+        feature_size=24,  # Smaller for testing
+        depths=(2, 2, 2, 2),
+        num_heads=(3, 6, 12, 24),
+        window_size=4  # Smaller window for 64x64x64 input
+    )
+    model_swin = model_swin.to(device)
+    output = model_swin(x)
+    print(f"Output shape: {output.shape}")
+    
+    total_params = sum(p.numel() for p in model_swin.parameters())
+    print(f"Total parameters (SwinUNet3D): {total_params:,}")
