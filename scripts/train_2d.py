@@ -125,6 +125,17 @@ def get_subject_split_stacks(root_dir: str, classes: list[str], test_size: float
     return train_subjects, test_subjects
 
 
+def _resolve_ckpt_prefix(cfg: DictConfig) -> str:
+    if cfg.model.name == "simpleunet2d":
+        return "simpleunet2d"
+    return "deit2d"
+
+
+def _resolve_ckpt_dir(cfg: DictConfig) -> Path:
+    base = Path(cfg.checkpoint.dir)
+    return base / _resolve_ckpt_prefix(cfg)
+
+
 class MetricsHistory(pl.Callback):
     def __init__(self) -> None:
         self.train_loss = []
@@ -303,8 +314,8 @@ def main(cfg: DictConfig) -> None:
 
     callbacks = [
         ModelCheckpoint(
-            dirpath=str(Path(cfg.checkpoint.dir)),
-            filename="deit2d-{epoch:03d}",
+            dirpath=str(_resolve_ckpt_dir(cfg)),
+            filename=f"{_resolve_ckpt_prefix(cfg)}-{{epoch:03d}}",
             monitor=cfg.checkpoint.monitor,
             mode=cfg.checkpoint.mode,
             save_top_k=1,

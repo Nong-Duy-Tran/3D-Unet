@@ -45,10 +45,10 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    tags: [simpleunet2d, jpg]
+    tags: [deit2d_attn_16sl, jpg]
 
 checkpoint:
-  dir: checkpoints/simpleunet2d_attn_16sl
+  dir: checkpoints/deit2d_attn_16sl
   monitor: val/auc_epoch
   mode: max
 
