@@ -71,14 +71,32 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 image_size = getattr(cfg_in.model, "image_size", None)
                 if image_size is None:
                     image_size = int(cfg_in.data.target_shape[1])
+                in_channels = cfg_in.model.in_channels
+                if getattr(cfg_in.data, "rgb_mode", False):
+                    in_channels = 3
                 model_kwargs.update(
                     {
                         "timm_name": cfg_in.model.timm_name,
                         "pretrained": cfg_in.model.pretrained,
                         "image_size": image_size,
+                        "in_channels": in_channels,
                         "drop_path_rate": cfg_in.model.drop_path_rate,
                         "attn_drop_rate": cfg_in.model.attn_drop_rate,
                         "dropout": cfg_in.model.dropout,
+                    }
+                )
+                return model_kwargs
+            if cfg_in.model.name == "simpleunet2d":
+                in_channels = cfg_in.model.in_channels
+                if getattr(cfg_in.data, "rgb_mode", False):
+                    in_channels = 3
+                model_kwargs.update(
+                    {
+                        "in_channels": in_channels,
+                        "base_features": cfg_in.model.base_features,
+                        "head_hidden": cfg_in.model.head_hidden,
+                        "dropout": cfg_in.model.dropout,
+                        "head_dropout": cfg_in.model.head_dropout,
                     }
                 )
                 return model_kwargs
@@ -207,8 +225,7 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
             self._val_preds.append(preds.detach().cpu())
             self._val_targets.append(y.detach().cpu())
-            if probs.shape[-1] == 2:
-                self._val_probs.append(probs[:, 1].detach().cpu())
+            self._val_probs.append(probs.detach().cpu())
             return loss
 
         def on_validation_epoch_start(self) -> None:
@@ -235,23 +252,35 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             targets = torch.cat(self._val_targets).numpy()
             probs = torch.cat(self._val_probs).numpy() if self._val_probs else None
 
-            precision = precision_score(targets, preds, zero_division=0)
-            recall = recall_score(targets, preds, zero_division=0)
-            f1_epoch = f1_score(targets, preds, zero_division=0)
+            precision = precision_score(targets, preds, zero_division=0, average="macro")
+            recall = recall_score(targets, preds, zero_division=0, average="macro")
+            f1_epoch = f1_score(targets, preds, zero_division=0, average="macro")
             acc_epoch = accuracy_score(targets, preds)
-            auc_epoch = roc_auc_score(targets, probs) if probs is not None and len(set(targets.tolist())) > 1 else 0.0
-            cm = confusion_matrix(targets, preds, labels=[0, 1])
+            if probs is not None and len(set(targets.tolist())) > 1:
+                if probs.shape[1] > 2:
+                    auc_epoch = roc_auc_score(targets, probs, multi_class="ovr", average="macro")
+                else:
+                    auc_epoch = roc_auc_score(targets, probs[:, 1])
+            else:
+                auc_epoch = 0.0
+            cm = confusion_matrix(targets, preds, labels=list(range(int(probs.shape[1])))) if probs is not None else None
 
             self.log("val/acc_epoch", acc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log("val/precision", precision, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log("val/recall", recall, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log("val/f1_epoch", f1_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log("val/auc_epoch", auc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-            if cm.size == 4:
-                self.log("val/cm_tn", float(cm[0, 0]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-                self.log("val/cm_fp", float(cm[0, 1]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-                self.log("val/cm_fn", float(cm[1, 0]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-                self.log("val/cm_tp", float(cm[1, 1]), prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            if cm is not None:
+                for i in range(cm.shape[0]):
+                    for j in range(cm.shape[1]):
+                        self.log(
+                            f"val/cm_{i}{j}",
+                            float(cm[i, j]),
+                            prog_bar=False,
+                            on_step=False,
+                            on_epoch=True,
+                            sync_dist=True,
+                        )
 
         def configure_optimizers(self):
             optimizer_cfg = getattr(self.cfg.training, "optimizer", None)
@@ -391,7 +420,6 @@ def main(cfg: DictConfig) -> None:
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
         target_shape=tuple(cfg.data.target_shape),
-        use_hdf5=cfg.data.use_hdf5,
         weighted_sampler=getattr(cfg.data, "weighted_sampler", False),
         use_2d=getattr(cfg.data, "use_2d", False),
         num_slices=getattr(cfg.data, "num_slices", 8),
@@ -399,6 +427,17 @@ def main(cfg: DictConfig) -> None:
         resize_2d=getattr(cfg.data, "resize_2d", None),
         slice_strategy_train=getattr(cfg.data, "slice_strategy_train", "random"),
         slice_strategy_val=getattr(cfg.data, "slice_strategy_val", "uniform"),
+        imagenet_norm=getattr(cfg.data, "imagenet_norm", False),
+        randaugment=getattr(cfg.data, "randaugment", False),
+        randaugment_ops=getattr(cfg.data, "randaugment_ops", 2),
+        randaugment_mag=getattr(cfg.data, "randaugment_mag", 9),
+        rgb_mode=getattr(cfg.data, "rgb_mode", False),
+        normalize=getattr(cfg.data, "normalize", True),
+        data_format=getattr(cfg.data, "format", "nifti"),
+        classes=getattr(cfg.data, "classes", None),
+        class_map=getattr(cfg.data, "class_map", None),
+        jpg_view=getattr(cfg.data, "jpg_view", "ax"),
+        image_size=getattr(cfg.data, "image_size", None),
     )
 
     lr_scheduler_cfg = getattr(cfg.training, "lr_scheduler", None)

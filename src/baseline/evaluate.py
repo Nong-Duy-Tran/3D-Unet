@@ -37,15 +37,27 @@ def evaluate_model(model, dataloader, device):
             
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs[:, 1].cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
     
     # Calculate metrics
+    num_classes = len(set(all_labels))
+    if num_classes > 2:
+        auc = roc_auc_score(all_labels, np.array(all_probs), multi_class="ovr", average="macro")
+        precision = precision_score(all_labels, all_preds, zero_division=0, average="macro")
+        recall = recall_score(all_labels, all_preds, zero_division=0, average="macro")
+        f1 = f1_score(all_labels, all_preds, zero_division=0, average="macro")
+    else:
+        auc = roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.0
+        precision = precision_score(all_labels, all_preds, zero_division=0)
+        recall = recall_score(all_labels, all_preds, zero_division=0)
+        f1 = f1_score(all_labels, all_preds, zero_division=0)
+
     metrics = {
         'accuracy': accuracy_score(all_labels, all_preds),
-        'precision': precision_score(all_labels, all_preds, zero_division=0),
-        'recall': recall_score(all_labels, all_preds, zero_division=0),
-        'f1': f1_score(all_labels, all_preds, zero_division=0),
-        'auc': roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.0
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'auc': auc
     }
     
     print("\n" + "=" * 60)
@@ -60,7 +72,10 @@ def evaluate_model(model, dataloader, device):
     
     # Classification report
     print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, target_names=['Normal', 'Alzheimer']))
+    if args.class_names:
+        print(classification_report(all_labels, all_preds, target_names=args.class_names))
+    else:
+        print(classification_report(all_labels, all_preds))
     
     return metrics, all_labels, all_preds, all_probs
 
@@ -115,6 +130,7 @@ def _model_kwargs(args):
                 "timm_name": args.timm_name,
                 "pretrained": False,
                 "image_size": args.image_size,
+                "in_channels": 3 if args.rgb_mode else 1,
                 "drop_path_rate": args.drop_path_rate,
                 "attn_drop_rate": args.attn_drop_rate,
                 "dropout": args.dropout,
@@ -135,13 +151,16 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         target_shape=tuple(args.target_shape),
-        use_hdf5=args.use_hdf5,
         use_2d=args.use_2d,
         num_slices=args.num_slices,
         slice_axis=args.slice_axis,
         resize_2d=args.resize_2d,
         slice_strategy_train="uniform",
         slice_strategy_val="uniform",
+        imagenet_norm=args.imagenet_norm,
+        randaugment=False,
+        rgb_mode=args.rgb_mode,
+        normalize=not args.disable_normalize,
     )
     
     # Load model
@@ -192,6 +211,12 @@ if __name__ == "__main__":
                        help='Slice axis (0, 1, 2)')
     parser.add_argument('--resize_2d', type=int, nargs=2, default=None,
                        help='Resize 2D slices to (H W)')
+    parser.add_argument('--imagenet_norm', action='store_true',
+                       help='Apply ImageNet normalization (2D)')
+    parser.add_argument('--rgb_mode', action='store_true',
+                       help='Convert grayscale to 3-channel (2D)')
+    parser.add_argument('--disable_normalize', action='store_true',
+                       help='Disable z-score normalization for 3D volumes')
     parser.add_argument('--image_size', type=int, default=64,
                        help='Input image size for ViT')
     parser.add_argument('--patch_size', type=int, default=8,
@@ -214,12 +239,12 @@ if __name__ == "__main__":
                        help='ViT MLP dim')
     parser.add_argument('--dropout', type=float, default=0.1,
                        help='ViT dropout')
-    parser.add_argument('--use_hdf5', action='store_true',
-                       help='Use HDF5 dataset format')
     parser.add_argument('--target_shape', type=int, nargs=3, default=[64, 64, 64],
                        help='Target MRI shape (D H W)')
     parser.add_argument('--batch_size', type=int, default=4,
                        help='Batch size')
+    parser.add_argument('--class_names', type=str, nargs='*', default=None,
+                       help='Optional class names for report')
     parser.add_argument('--num_workers', type=int, default=4,
                        help='Number of workers')
     parser.add_argument('--device', type=str, default='cuda',

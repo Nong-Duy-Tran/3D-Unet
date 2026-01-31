@@ -1,4 +1,4 @@
-"""Defaults for ADNI HDF5 conversion."""
+"""Defaults for ADNI NIfTI processing."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,7 +17,7 @@ DEFAULT_SOURCE_ROOT_MAP = {
     "ecc": REPO_ROOT / "data/ADNI/ecc/ADNI",
 }
 
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "data/ADNI/hdf5"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "data/ADNI"
 
 DEFAULT_SPLIT_RATIOS = "train=0.8,val=0.1,test=0.1"
-DEFAULT_SOURCE_LABEL_MAP = "abb=1,bbc=0,ecc=0"
+DEFAULT_SOURCE_LABEL_MAP = "abb=2,bbc=1,ecc=0"

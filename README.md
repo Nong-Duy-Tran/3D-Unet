@@ -23,25 +23,20 @@ pip install torch torchvision
 pip install -r requirements.txt
 ```
 
-## Data Preparation
+## Data Preparation (2D JPG pipeline)
 
-Convert your MRI data to HDF5 format:
+Generate 2D JPG slices from NIfTI volumes (ADNI abb/bbc/ecc):
 
 ```bash
+python scripts/nifti_to_jpg.py --output-dir data/ADNI/jpg
 ```
 
 
-## Training
+## Training (2D JPG + DeiT)
 
 Lightning + Hydra + W&B:
 ```bash
-python -m src.baseline.train
-```
-
-Override examples:
-```bash
-python -m src.baseline.train training.max_epochs=20 data.batch_size=8
-python -m src.baseline.train logging.wandb.enabled=false
+python scripts/train_2d.py --config-name train_2d_jpg
 ```
 
 ## Evaluation

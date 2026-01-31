@@ -1,0 +1,55 @@
+seed: 42
+
+data:
+  format: jpg
+  root_dir: data/ADNI/jpg
+  classes: [CN, MCI, AD]
+  test_size: 0.2
+  image_size: 224
+  batch_size: 32
+  num_workers: 16
+  randaugment_ops: 2
+  randaugment_mag: 9
+  num_slices: 16
+  strategy: random
+  val_strategy: uniform
+
+model:
+  name: deit_base_patch16_224.fb_in1k
+  pretrained: true
+  num_classes: 3
+  drop_path_rate: 0.2
+  attn_drop_rate: 0.1
+  # simpleunet2d only (kept for override runs)
+  base_features: 64
+  head_hidden: 256
+  dropout: 0.3
+  head_dropout: 0.2
+
+training:
+  max_epochs: 512
+  lr: 5.0e-5
+  weight_decay: 0.05
+  label_smoothing: 0.1
+  accelerator: gpu
+  devices: [3]
+  precision: 16
+  early_stopping:
+    monitor: val/auc_epoch
+    mode: max
+    patience: 32
+    min_delta: 0.0
+
+logging:
+  wandb:
+    enabled: true
+    project: alzheimer-baseline
+    name: null
+    tags: [simpleunet2d, jpg]
+
+checkpoint:
+  dir: checkpoints/simpleunet2d_attn_16sl
+  monitor: val/auc_epoch
+  mode: max
+
+output_dir: outputs/train_2d_jpg
