@@ -194,22 +194,26 @@ class SwinUNet3DClassifier(nn.Module):
             use_checkpoint=False,  # Set to True if memory is a concern
         )
         
-        # Calculate bottleneck features
-        # For Swin-UNETR, the bottleneck has feature_size * (2^(len(depths)-1)) channels
-        bottleneck_features = feature_size * (2 ** (len(depths) - 1))
-        
-        # Store feature_size for later use
+        # Store parameters for later use
         self.feature_size = feature_size
         self.depths = depths
+        self.img_size = img_size
         
         # Global average pooling
         self.global_pool = nn.AdaptiveAvgPool3d(1)
         
-        # Classification head
+        # Determine actual bottleneck features by running a dummy forward pass
+        with torch.no_grad():
+            dummy_input = torch.randn(1, in_channels, *img_size)
+            hidden_states_out = self.swin_unetr.swinViT(dummy_input, self.swin_unetr.normalize)
+            bottleneck_features = hidden_states_out[-1]
+            pooled = self.global_pool(bottleneck_features)
+            actual_features = pooled.view(pooled.size(0), -1).shape[1]
+        
+        # Classification head - no nn.Flatten() since we manually flatten in forward()
         self.classifier = nn.Sequential(
-            nn.Flatten(),
             nn.Dropout(0.5),
-            nn.Linear(bottleneck_features, 256),
+            nn.Linear(actual_features, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),
             nn.Linear(256, num_classes)
@@ -233,26 +237,9 @@ class SwinUNet3DClassifier(nn.Module):
         # hidden_states_out is a list of feature maps from different stages
         bottleneck_features = hidden_states_out[-1]
         
-        # Global pooling
+        # Global pooling and flatten
         pooled = self.global_pool(bottleneck_features)
         pooled_flat = torch.flatten(pooled, 1)
-        
-        # Dynamically adjust classifier if needed on first forward pass
-        if not hasattr(self, '_classifier_adjusted'):
-            actual_features = pooled_flat.shape[1]
-            expected_features = self.feature_size * (2 ** (len(self.depths) - 1))
-            if actual_features != expected_features:
-                # Rebuild classifier with correct input size
-                self.classifier = nn.Sequential(
-                    nn.Dropout(0.5),
-                    nn.Linear(actual_features, 256),
-                    nn.ReLU(inplace=True),
-                    nn.Dropout(0.3),
-                    nn.Linear(256, 2)  # num_classes
-                )
-                if pooled.is_cuda:
-                    self.classifier = self.classifier.cuda()
-            self._classifier_adjusted = True
         
         # Classify
         logits = self.classifier(pooled_flat)
@@ -311,6 +298,7 @@ if __name__ == "__main__":
 
     print("\nTesting SwinUNet3D Classifier...")
     model_swin = SwinUNet3DClassifier(
+        img_size=(64, 64, 64),  # Match test input size
         in_channels=1, 
         num_classes=2, 
         feature_size=24,  # Smaller for testing

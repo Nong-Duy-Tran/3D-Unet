@@ -74,7 +74,7 @@ def find_all_oasis_subjects(oasis_root, verbose=False):
         'total_dirs': 0,
         'no_txt': 0,
         'no_cdr': 0,
-        'no_t88_path': 0,
+        'no_subj_path': 0,
         'no_img_file': 0,
         'success': 0
     }
@@ -110,19 +110,19 @@ def find_all_oasis_subjects(oasis_root, verbose=False):
             label = 0 if cdr == 0.0 else 1
             class_name = 'normal' if label == 0 else 'alzheimer'
             
-            # 2. Find the T88 registered, masked brain image
-            t88_path = subject_dir / 'PROCESSED' / 'MPRAGE' / 'T88_111'
+            # 2. Find the subject registered brain image
+            subj_path = subject_dir / 'PROCESSED' / 'MPRAGE' / 'SUBJ_111'
             
-            if not t88_path.exists():
-                stats['no_t88_path'] += 1
+            if not subj_path.exists():
+                stats['no_subj_path'] += 1
                 if verbose:
-                    print(f"  No T88_111 path: {subject_id}")
+                    print(f"  No SUBJ_111 path: {subject_id}")
                 continue
             
-            # Find the masked image file
+            # Find the subject image file
             img_file = None
-            for f in t88_path.iterdir():
-                if f.name.endswith('masked_gfc.img'):
+            for f in subj_path.iterdir():
+                if f.name.endswith('sbj_111.img') or f.name.endswith('sbj_111.4dfp.img'):
                     img_file = f
                     break
             
@@ -151,8 +151,8 @@ def find_all_oasis_subjects(oasis_root, verbose=False):
     print(f"\nSkipped:")
     print(f"  Missing .txt file: {stats['no_txt']}")
     print(f"  Missing CDR in .txt: {stats['no_cdr']}")
-    print(f"  Missing T88_111 folder: {stats['no_t88_path']}")
-    print(f"  Missing masked image: {stats['no_img_file']}")
+    print(f"  Missing SUBJ_111 folder: {stats['no_subj_path']}")
+    print(f"  Missing subject image: {stats['no_img_file']}")
     print(f"{'='*70}")
     
     # Remove duplicate subjects (keep only first scan, usually MR1)

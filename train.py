@@ -143,7 +143,8 @@ def main(args):
     # Add model-specific parameters
     if args.model == 'swinunet':
         # SwinUNet uses different parameters
-        model_kwargs['feature_size'] = args.base_features
+        model_kwargs['img_size'] = tuple(args.target_shape)
+        model_kwargs['feature_size'] = args.feature_size
         model_kwargs['depths'] = (2, 2, 2, 2)
         model_kwargs['num_heads'] = (3, 6, 12, 24)
         model_kwargs['window_size'] = 7
@@ -267,6 +268,8 @@ if __name__ == "__main__":
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
+    parser.add_argument('--feature_size', type=int, default=48,
+                        help='Feature size for Swin-UNETR')
     
     # Training
     parser.add_argument('--epochs', type=int, default=100,
