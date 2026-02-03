@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -54,6 +57,32 @@ def _normalize_and_save(
     return True
 
 
+def _run_hdbet(nifti_path: Path, device: str, fast: bool, tta: bool) -> Path:
+    hdbet_cmd = shutil.which("hd-bet")
+    if not hdbet_cmd:
+        raise RuntimeError("hd-bet not found. Install HD-BET or disable --hdbet.")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="hdbet_", dir="/tmp"))
+    out_path = tmp_dir / f"{nifti_path.stem}_stripped.nii.gz"
+    cmd = [
+        hdbet_cmd,
+        "-i",
+        str(nifti_path),
+        "-o",
+        str(out_path),
+        "-device",
+        device,
+    ]
+    if fast:
+        cmd.append("-mode")
+        cmd.append("fast")
+    if not tta:
+        cmd.append("--disable_tta")
+
+    subprocess.run(cmd, check=True)
+    return out_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert ADNI NIfTI volumes to 2D JPG slices")
     parser.add_argument("--output-dir", default="data/ADNI/jpg", help="Output root for JPG slices")
@@ -76,6 +105,10 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Optional NIfTI limit")
     parser.add_argument("--reorient-ras", action="store_true", help="Reorient to RAS+ before slicing")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing JPGs")
+    parser.add_argument("--hdbet", action="store_true", help="Apply HD-BET skull stripping before slicing")
+    parser.add_argument("--hdbet-device", default="cpu", help="HD-BET device (cpu or cuda)")
+    parser.add_argument("--hdbet-fast", action="store_true", help="Use HD-BET fast mode")
+    parser.add_argument("--hdbet-tta", action="store_true", help="Use HD-BET test-time augmentation")
     args = parser.parse_args()
 
     source_root_map = {}
@@ -109,7 +142,11 @@ def main() -> None:
         label_name = label_map.get(source_key)
         if label_name is None:
             continue
-        img_data = load_nifti(path, reorient_ras=args.reorient_ras)
+        if args.hdbet:
+            stripped_path = _run_hdbet(path, args.hdbet_device, args.hdbet_fast, args.hdbet_tta)
+            img_data = load_nifti(stripped_path, reorient_ras=args.reorient_ras)
+        else:
+            img_data = load_nifti(path, reorient_ras=args.reorient_ras)
         if img_data.ndim == 4:
             img_data = img_data[..., 0]
 

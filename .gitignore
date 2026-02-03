@@ -11,7 +11,7 @@ env/
 .venv
 
 # Data
-data/
+data/*
 data_hdf5/
 *.nii
 *.nii.gz

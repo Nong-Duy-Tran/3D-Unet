@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as T
+from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report, roc_curve, auc
@@ -26,7 +27,7 @@ from tqdm.auto import tqdm
 import lightning.pytorch as pl
 import timm
 
-from src.baseline.models.deit2d_classifier import DeiT2DClassifier
+from src.baseline.models.deit2d_classifier import DeiT2DClassifier, SliceAttentionPool
 from src.baseline.models.simple_unet2d_classifier import SimpleUNet2DClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -123,6 +124,69 @@ def get_subject_split_stacks(root_dir: str, classes: list[str], test_size: float
             test_subjects.append((s_id, paths, cls_idx))
 
     return train_subjects, test_subjects
+
+
+def get_subject_stacks(root_dir: str, classes: list[str]):
+    subjects_out = []
+    for cls_idx, cls_name in enumerate(classes):
+        cls_dir = Path(root_dir) / cls_name
+        all_files = list(cls_dir.glob("*.jpg"))
+        if not all_files:
+            continue
+
+        subjects: dict[str, list[Path]] = {}
+        for f in all_files:
+            subject_id = _subject_id_from_path(f)
+            subjects.setdefault(subject_id, []).append(f)
+
+        for s_id, paths in subjects.items():
+            sorted_paths = sorted(str(p) for p in paths)
+            subjects_out.append((s_id, sorted_paths, cls_idx))
+
+    return subjects_out
+
+
+class Timm2DSliceAttention(nn.Module):
+    """timm 2D encoder + slice attention pooling for volume classification."""
+
+    def __init__(
+        self,
+        timm_name: str,
+        pretrained: bool,
+        image_size: int,
+        in_channels: int,
+        num_classes: int,
+        drop_path_rate: float = 0.0,
+        attn_drop_rate: float = 0.0,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.encoder = timm.create_model(
+            timm_name,
+            pretrained=pretrained,
+            num_classes=0,
+            in_chans=in_channels,
+            img_size=image_size,
+            drop_path_rate=drop_path_rate,
+            attn_drop_rate=attn_drop_rate,
+        )
+        embed_dim = getattr(self.encoder, "num_features", None)
+        if embed_dim is None:
+            raise ValueError("Unable to infer embedding dim from timm model.")
+        self.pool = SliceAttentionPool(embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.classifier = nn.Linear(embed_dim, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 4:
+            x = x.unsqueeze(1)
+        b, s, c, h, w = x.shape
+        x = x.view(b * s, c, h, w)
+        feats = self.encoder(x)
+        feats = feats.view(b, s, -1)
+        pooled = self.pool(feats)
+        pooled = self.dropout(pooled)
+        return self.classifier(pooled)
 
 
 def _resolve_ckpt_prefix(cfg: DictConfig) -> str:
@@ -255,7 +319,7 @@ def save_plots(output_dir, history: MetricsHistory, labels, preds, probs, class_
         plt.close()
 
 
-@hydra.main(config_path="../configs/baseline", config_name="train_2d_jpg", version_base=None)
+@hydra.main(config_path="../configs/baseline", config_name="train_2d_oasis", version_base=None)
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
@@ -264,6 +328,13 @@ def main(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
+
+    orig_cwd = Path(get_original_cwd())
+    def _resolve_path(path_value: str | None) -> Path | None:
+        if path_value is None:
+            return None
+        path = Path(path_value)
+        return path if path.is_absolute() else (orig_cwd / path)
 
     train_transform = T.Compose([
         T.Resize((cfg.data.image_size, cfg.data.image_size)),
@@ -276,11 +347,19 @@ def main(cfg: DictConfig) -> None:
         T.ToTensor(),
         T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    train_subjects, val_subjects = get_subject_split_stacks(
-        cfg.data.root_dir,
-        list(cfg.data.classes),
-        cfg.data.test_size,
-    )
+    train_dir = _resolve_path(getattr(cfg.data, "train_dir", None))
+    val_dir = _resolve_path(getattr(cfg.data, "val_dir", None))
+    classes = list(cfg.data.classes)
+    if train_dir and val_dir:
+        train_subjects = get_subject_stacks(str(train_dir), classes)
+        val_subjects = get_subject_stacks(str(val_dir), classes)
+    else:
+        root_dir = _resolve_path(cfg.data.root_dir)
+        train_subjects, val_subjects = get_subject_split_stacks(
+            str(root_dir),
+            classes,
+            cfg.data.test_size,
+        )
     train_ds = MRIVolumeStackDataset(
         train_subjects,
         num_slices=cfg.data.num_slices,
@@ -347,6 +426,7 @@ def main(cfg: DictConfig) -> None:
         logger=logger,
         callbacks=callbacks,
         log_every_n_steps=1,
+        num_sanity_val_steps=0,
     )
 
     trainer.fit(lit_model, train_dataloaders=train_loader, val_dataloaders=val_loader)
@@ -366,7 +446,7 @@ def main(cfg: DictConfig) -> None:
         probs, labels, preds, auc_score, cm, report = evaluate_subjects(
             lit_model, val_loader, device, class_names
         )
-        output_dir = getattr(cfg, "output_dir", "outputs/train_2d")
+        output_dir = _resolve_path(getattr(cfg, "output_dir", "outputs/train_2d"))
         save_plots(output_dir, history_cb, labels, preds, probs, class_names)
         report_path = Path(output_dir) / "classification_report.txt"
         report_path.write_text(report)
@@ -386,6 +466,17 @@ class _LightningModule(pl.LightningModule):
                     head_hidden=cfg.model.head_hidden,
                     dropout=cfg.model.dropout,
                     head_dropout=cfg.model.head_dropout,
+                )
+            elif str(cfg.model.name).startswith("swin_"):
+                self.model = Timm2DSliceAttention(
+                    timm_name=cfg.model.name,
+                    pretrained=cfg.model.pretrained,
+                    image_size=cfg.data.image_size,
+                    in_channels=3,
+                    num_classes=cfg.model.num_classes,
+                    drop_path_rate=cfg.model.drop_path_rate,
+                    attn_drop_rate=cfg.model.attn_drop_rate,
+                    dropout=0.1,
                 )
             else:
                 self.model = DeiT2DClassifier(
@@ -443,7 +534,9 @@ class _LightningModule(pl.LightningModule):
         probs = torch.cat(self.val_probs).numpy()
         labels = torch.cat(self.val_labels).numpy()
         try:
-            if probs.shape[1] > 2:
+            if len(set(labels.tolist())) < 2:
+                auc = float("nan")
+            elif probs.shape[1] > 2:
                 auc = roc_auc_score(labels, probs, multi_class="ovr", average="macro")
             else:
                 auc = roc_auc_score(labels, probs[:, 1])
