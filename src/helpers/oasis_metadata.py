@@ -257,3 +257,115 @@ def save_split_info(train_data, val_data, test_data, output_dir):
 
     print(f"\nSplit information saved to {info_dir}")
     return summary
+
+
+def _split_summary(items):
+    return {
+        'total': len(items),
+        'normal': sum(1 for x in items if x['label'] == 0),
+        'alzheimer': sum(1 for x in items if x['label'] == 1),
+        'subjects': len(items),
+    }
+
+
+def make_kfold_splits(data, k_folds=5, test_ratio=0.2, val_ratio=0.1, random_seed=42):
+    """
+    Split data into:
+      - fixed held-out test set (stratified) with size test_ratio
+      - k repeated stratified train/val splits on the remaining data
+
+    For each fold, val set is val_ratio of the remaining data (stratified).
+    Returns: folds, test_data
+    folds is a list of dicts: {fold, train, val}
+    """
+    if k_folds < 2:
+        raise ValueError("k_folds must be >= 2")
+    if not (0.0 < val_ratio < 1.0):
+        raise ValueError("val_ratio must be in (0, 1)")
+
+    from sklearn.model_selection import StratifiedShuffleSplit
+
+    random.seed(random_seed)
+    labels = [s['label'] for s in data]
+
+    if test_ratio and test_ratio > 0:
+        test_split = StratifiedShuffleSplit(
+            n_splits=1, test_size=float(test_ratio), random_state=random_seed
+        )
+        trainval_idx, test_idx = next(test_split.split(list(range(len(data))), labels))
+        trainval_data = [data[i] for i in trainval_idx]
+        test_data = [data[i] for i in test_idx]
+    else:
+        trainval_data = list(data)
+        test_data = []
+
+    trainval_labels = [s['label'] for s in trainval_data]
+    val_split = StratifiedShuffleSplit(
+        n_splits=k_folds, test_size=float(val_ratio), random_state=random_seed
+    )
+
+    fold_splits = []
+    for fold_idx, (train_idx, val_idx) in enumerate(val_split.split(list(range(len(trainval_data))), trainval_labels)):
+        train_data = [trainval_data[i] for i in train_idx]
+        val_data = [trainval_data[i] for i in val_idx]
+        fold_splits.append({'fold': fold_idx, 'train': train_data, 'val': val_data})
+
+    return fold_splits, test_data
+
+
+def save_kfold_info(folds, test_data, output_dir, random_seed=42):
+    """
+    Save k-fold split information to JSON and CSV files.
+    """
+    info_dir = Path(output_dir) / 'split_info'
+    info_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        'seed': random_seed,
+        'k_folds': len(folds),
+        'test': test_data,
+        'folds': [],
+    }
+    summary = {
+        'seed': random_seed,
+        'k_folds': len(folds),
+        'test': _split_summary(test_data),
+        'folds': [],
+    }
+
+    for fold in folds:
+        fold_idx = int(fold['fold'])
+        train_data = fold['train']
+        val_data = fold['val']
+        payload['folds'].append(
+            {
+                'fold': fold_idx,
+                'train': train_data,
+                'val': val_data,
+            }
+        )
+        summary['folds'].append(
+            {
+                'fold': fold_idx,
+                'train': _split_summary(train_data),
+                'val': _split_summary(val_data),
+            }
+        )
+
+    folds_path = info_dir / 'folds.json'
+    with open(folds_path, 'w') as f:
+        json.dump(payload, f, indent=2)
+
+    summary_path = info_dir / 'folds_summary.json'
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    if test_data:
+        test_json_path = info_dir / 'test_split.json'
+        with open(test_json_path, 'w') as f:
+            json.dump(test_data, f, indent=2)
+        test_csv_path = info_dir / 'test_split.csv'
+        pd.DataFrame(test_data).to_csv(test_csv_path, index=False)
+
+    print(f"\nK-fold split information saved to {info_dir}")
+    return summary

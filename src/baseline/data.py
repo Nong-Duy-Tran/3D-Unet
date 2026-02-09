@@ -243,6 +243,7 @@ class MRIVolumeJPGDataset(Dataset):
         image_size: int = 224,
         augment: bool = False,
         normalize: bool = True,
+        subject_ids: set[str] | None = None,
     ):
         self.root_dir = root_dir
         self.view = view.lower()
@@ -251,6 +252,7 @@ class MRIVolumeJPGDataset(Dataset):
         self.image_size = int(image_size)
         self.augment = augment
         self.normalize = normalize
+        self.subject_ids = set(subject_ids) if subject_ids else None
 
         self.samples: list[list[str]] = []
         self.labels: list[int] = []
@@ -284,6 +286,8 @@ class MRIVolumeJPGDataset(Dataset):
                 grouped.setdefault(subject_id, []).append((idx, str(path)))
 
             for subject_id, items in grouped.items():
+                if self.subject_ids is not None and subject_id not in self.subject_ids:
+                    continue
                 items_sorted = sorted(items, key=lambda x: x[0])
                 if class_map:
                     label = class_map[class_name]
@@ -309,7 +313,8 @@ class MRIVolumeJPGDataset(Dataset):
         if self.augment:
             volume = self._augment(volume)
 
-        img_tensor = torch.from_numpy(volume).float().unsqueeze(0)  # (1, D, H, W)
+        # Return (S, C, H, W) for 2D slice models.
+        img_tensor = torch.from_numpy(volume).float().unsqueeze(1)  # (D, 1, H, W)
         label_tensor = torch.tensor(label, dtype=torch.long)
         return img_tensor, label_tensor
 
@@ -381,7 +386,9 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
                    classes=None,
                    class_map=None,
                    jpg_view="ax",
-                   image_size=None):
+                   image_size=None,
+                   train_subject_ids=None,
+                   val_subject_ids=None):
     """
     Create dataloaders
     
@@ -409,6 +416,8 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         class_map: Optional mapping {folder_name: label} (jpg)
         jpg_view: Slice view to stack from jpgs (ax|sag|cor)
         image_size: Resize jpg slices to this size (jpg)
+        train_subject_ids: Optional set/list of subject IDs to include in train
+        val_subject_ids: Optional set/list of subject IDs to include in val
     
     Returns:
         train_loader, val_loader
@@ -446,6 +455,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             image_size=image_size,
             augment=True,
             normalize=normalize,
+            subject_ids=train_subject_ids,
         )
         val_dataset = MRIVolumeJPGDataset(
             val_dir,
@@ -457,6 +467,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             image_size=image_size,
             augment=False,
             normalize=normalize,
+            subject_ids=val_subject_ids,
         )
     else:
         train_dataset = MRIClassificationDataset(

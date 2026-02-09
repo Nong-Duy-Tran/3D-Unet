@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from typing import Any
 
 import hydra
@@ -13,13 +14,52 @@ from src.baseline.models import get_model
 from src.baseline.utils import find_repo_root
 
 
-def _resolve_paths(cfg: DictConfig) -> tuple[Path, Path, Path]:
+def _resolve_paths(cfg: DictConfig) -> tuple[Path, Path, Path, Path]:
     orig_cwd = Path(get_original_cwd())
     repo_root = find_repo_root(orig_cwd)
     train_dir = repo_root / cfg.data.train_dir
     val_dir = repo_root / cfg.data.val_dir
     ckpt_dir = repo_root / cfg.checkpoint.dir
-    return train_dir, val_dir, ckpt_dir
+    return train_dir, val_dir, ckpt_dir, repo_root
+
+
+def _load_subject_ids(cfg: DictConfig, repo_root: Path) -> tuple[list[str] | None, list[str] | None]:
+    split_file = getattr(cfg.data, "split_file", None)
+    if not split_file:
+        return None, None
+
+    split_path = repo_root / split_file
+    if not split_path.exists():
+        raise FileNotFoundError(f"Split file not found: {split_path}")
+
+    with open(split_path, "r") as f:
+        split_data = json.load(f)
+
+    if "folds" in split_data:
+        fold_index = int(getattr(cfg.data, "fold_index", 0))
+        folds = split_data.get("folds", [])
+        if fold_index < 0 or fold_index >= len(folds):
+            raise ValueError(f"fold_index {fold_index} out of range for {len(folds)} folds")
+        fold = folds[fold_index]
+        train_items = fold.get("train", [])
+        val_items = fold.get("val", [])
+    else:
+        train_items = split_data.get("train", [])
+        val_items = split_data.get("val", [])
+
+    def _to_ids(items):
+        if not items:
+            return []
+        first = items[0]
+        if isinstance(first, str):
+            return [str(x) for x in items]
+        return [str(x["subject_id"]) for x in items]
+
+    train_ids = _to_ids(train_items)
+    val_ids = _to_ids(val_items)
+    if not train_ids or not val_ids:
+        raise ValueError("Split file does not contain valid train/val subject IDs.")
+    return train_ids, val_ids
 
 
 def _compute_class_weights(labels: list[int], num_classes: int) -> torch.Tensor:
@@ -49,6 +89,14 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 model_name=cfg_in.model.name,
                 **self._model_kwargs(cfg_in),
             )
+            self._freeze_backbone = bool(getattr(cfg_in.training, "freeze_backbone", False))
+            if self._freeze_backbone:
+                encoder = getattr(self.model, "encoder", None)
+                if encoder is None:
+                    raise ValueError("freeze_backbone=true but model has no encoder to freeze.")
+                for param in encoder.parameters():
+                    param.requires_grad = False
+                encoder.eval()
             loss_cfg = getattr(cfg_in.training, "loss", None)
             label_smoothing = 0.0
             if loss_cfg and getattr(loss_cfg, "label_smoothing", None) is not None:
@@ -57,6 +105,14 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             self._val_preds: list[torch.Tensor] = []
             self._val_targets: list[torch.Tensor] = []
             self._val_probs: list[torch.Tensor] = []
+
+        def train(self, mode: bool = True):
+            super().train(mode)
+            if self._freeze_backbone:
+                encoder = getattr(self.model, "encoder", None)
+                if encoder is not None:
+                    encoder.eval()
+            return self
 
         @staticmethod
         def _model_kwargs(cfg_in: DictConfig) -> dict[str, Any]:
@@ -214,14 +270,7 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             loss = self.loss_fn(logits, y)
             probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
-            acc = (preds == y).float().mean()
-            f1 = self._batch_f1(preds, y)
-            auc = self._batch_auc(probs, y)
             self.log("val/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-            self.log("val/acc", acc, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
-            self.log("val/f1", f1, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-            if auc is not None:
-                self.log("val/auc", auc, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
 
             self._val_preds.append(preds.detach().cpu())
             self._val_targets.append(y.detach().cpu())
@@ -320,6 +369,36 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             try:
                 scheduler_cls = getattr(lr_schedulers, scheduler_name)
             except AttributeError as exc:
+                scheduler_cls = None
+
+            if scheduler_name == "CosineWarmup":
+                warmup_epochs = int(scheduler_cfg.pop("warmup_epochs", 0))
+                warmup_start_factor = float(scheduler_cfg.pop("warmup_start_factor", 0.1))
+                eta_min = float(scheduler_cfg.pop("eta_min", 0.0))
+                t_max = scheduler_cfg.pop("T_max", None)
+                if t_max is None:
+                    t_max = max(1, int(self.cfg.training.max_epochs) - warmup_epochs)
+                cosine = lr_schedulers.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=eta_min)
+                if warmup_epochs > 0:
+                    warmup = lr_schedulers.LinearLR(
+                        optimizer, start_factor=warmup_start_factor, total_iters=warmup_epochs
+                    )
+                    scheduler = lr_schedulers.SequentialLR(
+                        optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs]
+                    )
+                else:
+                    scheduler = cosine
+                return {
+                    "optimizer": optimizer,
+                    "lr_scheduler": {
+                        "scheduler": scheduler,
+                        "monitor": monitor,
+                        "interval": interval,
+                        "frequency": frequency,
+                    },
+                }
+
+            if scheduler_cls is None:
                 raise ValueError(f"Unknown lr scheduler: {scheduler_name}") from exc
 
             if scheduler_name == "OneCycleLR":
@@ -387,7 +466,7 @@ def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
         except Exception as exc:  # pragma: no cover
             raise ImportError("wandb is required when logging.wandb.enabled=true") from exc
 
-    trainer = pl.Trainer(
+    trainer_kwargs = dict(
         max_epochs=cfg.training.max_epochs,
         accelerator=cfg.training.accelerator,
         devices=cfg.training.devices,
@@ -397,6 +476,10 @@ def _make_trainer(cfg: DictConfig, ckpt_dir: Path):
         log_every_n_steps=1,
         enable_progress_bar=True,
     )
+    accumulate = getattr(cfg.training, "accumulate_grad_batches", None)
+    if accumulate is not None:
+        trainer_kwargs["accumulate_grad_batches"] = int(accumulate)
+    trainer = pl.Trainer(**trainer_kwargs)
     return trainer
 
 
@@ -411,15 +494,18 @@ def main(cfg: DictConfig) -> None:
 
     pl.seed_everything(cfg.seed, workers=True)
 
-    train_dir, val_dir, ckpt_dir = _resolve_paths(cfg)
+    train_dir, val_dir, ckpt_dir, repo_root = _resolve_paths(cfg)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    train_subject_ids, val_subject_ids = _load_subject_ids(cfg, repo_root)
+
+    target_shape = getattr(cfg.data, "target_shape", (64, 64, 64))
     train_loader, val_loader = get_dataloaders(
         train_dir=str(train_dir),
         val_dir=str(val_dir),
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
-        target_shape=tuple(cfg.data.target_shape),
+        target_shape=tuple(target_shape),
         weighted_sampler=getattr(cfg.data, "weighted_sampler", False),
         use_2d=getattr(cfg.data, "use_2d", False),
         num_slices=getattr(cfg.data, "num_slices", 8),
@@ -438,6 +524,8 @@ def main(cfg: DictConfig) -> None:
         class_map=getattr(cfg.data, "class_map", None),
         jpg_view=getattr(cfg.data, "jpg_view", "ax"),
         image_size=getattr(cfg.data, "image_size", None),
+        train_subject_ids=train_subject_ids,
+        val_subject_ids=val_subject_ids,
     )
 
     lr_scheduler_cfg = getattr(cfg.training, "lr_scheduler", None)

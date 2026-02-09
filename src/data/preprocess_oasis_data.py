@@ -16,7 +16,9 @@ if str(repo_root) not in sys.path:
 from src.helpers.oasis_metadata import (  # noqa: E402
     find_all_oasis_subjects,
     save_split_info,
+    save_kfold_info,
     split_by_subject,
+    make_kfold_splits,
 )
 from src.modules.oasis_preprocess import (  # noqa: E402
     convert_and_copy_subjects,
@@ -59,96 +61,222 @@ def main(args):
     for cdr in sorted(cdr_counts.keys()):
         print(f"  CDR {cdr}: {cdr_counts[cdr]} subjects")
 
-    print("\n" + "-" * 70)
-    print("Splitting data by subject...")
-    print("-" * 70)
+    if args.k_folds and args.k_folds > 1 and not args.single_dir:
+        print("\nNote: --k_folds enabled; forcing --single_dir to avoid data duplication.")
+        args.single_dir = True
 
-    train_data, val_data, test_data = split_by_subject(
-        all_subjects,
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
-        test_ratio=args.test_ratio,
-        random_seed=args.seed,
-    )
+    output_dir = Path(args.output_dir)
 
-    print(f"\nTrain set: {len(train_data)} subjects")
-    print(f"  Normal: {sum(1 for x in train_data if x['label'] == 0)}")
-    print(f"  Alzheimer: {sum(1 for x in train_data if x['label'] == 1)}")
+    if args.k_folds and args.k_folds > 1:
+        print("\n" + "-" * 70)
+        print(f"Creating stratified {args.k_folds}-fold splits (subject-level)...")
+        print("-" * 70)
+        fold_seed = args.fold_seed if args.fold_seed is not None else args.seed
+        folds, test_data = make_kfold_splits(
+            all_subjects,
+            k_folds=int(args.k_folds),
+            test_ratio=float(args.test_ratio),
+            val_ratio=float(args.fold_val_ratio),
+            random_seed=int(fold_seed),
+        )
 
-    print(f"\nValidation set: {len(val_data)} subjects")
-    print(f"  Normal: {sum(1 for x in val_data if x['label'] == 0)}")
-    print(f"  Alzheimer: {sum(1 for x in val_data if x['label'] == 1)}")
+        print(f"\nTest set: {len(test_data)} subjects")
+        print(f"  Normal: {sum(1 for x in test_data if x['label'] == 0)}")
+        print(f"  Alzheimer: {sum(1 for x in test_data if x['label'] == 1)}")
+        for fold in folds:
+            train_data = fold['train']
+            val_data = fold['val']
+            print(f"\nFold {fold['fold']}:")
+            print(f"  Train: {len(train_data)} (N={sum(1 for x in train_data if x['label'] == 0)}, "
+                  f"A={sum(1 for x in train_data if x['label'] == 1)})")
+            print(f"  Val:   {len(val_data)} (N={sum(1 for x in val_data if x['label'] == 0)}, "
+                  f"A={sum(1 for x in val_data if x['label'] == 1)})")
+    else:
+        print("\n" + "-" * 70)
+        print("Splitting data by subject...")
+        print("-" * 70)
 
-    print(f"\nTest set: {len(test_data)} subjects")
-    print(f"  Normal: {sum(1 for x in test_data if x['label'] == 0)}")
-    print(f"  Alzheimer: {sum(1 for x in test_data if x['label'] == 1)}")
+        train_data, val_data, test_data = split_by_subject(
+            all_subjects,
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            random_seed=args.seed,
+        )
+
+        print(f"\nTrain set: {len(train_data)} subjects")
+        print(f"  Normal: {sum(1 for x in train_data if x['label'] == 0)}")
+        print(f"  Alzheimer: {sum(1 for x in train_data if x['label'] == 1)}")
+
+        print(f"\nValidation set: {len(val_data)} subjects")
+        print(f"  Normal: {sum(1 for x in val_data if x['label'] == 0)}")
+        print(f"  Alzheimer: {sum(1 for x in val_data if x['label'] == 1)}")
+
+        print(f"\nTest set: {len(test_data)} subjects")
+        print(f"  Normal: {sum(1 for x in test_data if x['label'] == 0)}")
+        print(f"  Alzheimer: {sum(1 for x in test_data if x['label'] == 1)}")
 
     if not args.dry_run:
         print("\n" + "-" * 70)
         print("Converting and copying files to output directory...")
         print("-" * 70)
 
-        output_dir = Path(args.output_dir)
-
-        if args.export_2d_jpg:
-            train_count = convert_and_copy_subjects_jpg(
-                train_data,
-                output_dir,
-                'train',
-                image_size=args.image_size,
-                central_slices=args.central_slices,
-                reorient_ras=args.reorient_ras,
-                resample_mm=args.resample_mm,
-            )
-            val_count = convert_and_copy_subjects_jpg(
-                val_data,
-                output_dir,
-                'val',
-                image_size=args.image_size,
-                central_slices=args.central_slices,
-                reorient_ras=args.reorient_ras,
-                resample_mm=args.resample_mm,
-            )
-            test_count = convert_and_copy_subjects_jpg(
-                test_data,
-                output_dir,
-                'test',
-                image_size=args.image_size,
-                central_slices=args.central_slices,
-                reorient_ras=args.reorient_ras,
-                resample_mm=args.resample_mm,
-            )
+        if args.single_dir:
+            split_name = "all"
+            if args.export_2d_jpg:
+                all_count = convert_and_copy_subjects_jpg(
+                    all_subjects,
+                    output_dir,
+                    split_name,
+                    image_size=args.image_size,
+                    central_slices=args.central_slices,
+                    reorient_ras=args.reorient_ras,
+                    resample_mm=args.resample_mm,
+                    slice_axis=args.slice_axis,
+                    rotate_k=args.rotate_k,
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
+            else:
+                all_count = convert_and_copy_subjects(
+                    all_subjects,
+                    output_dir,
+                    split_name,
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
         else:
-            train_count = convert_and_copy_subjects(train_data, output_dir, 'train')
-            val_count = convert_and_copy_subjects(val_data, output_dir, 'val')
-            test_count = convert_and_copy_subjects(test_data, output_dir, 'test')
+            if args.export_2d_jpg:
+                train_count = convert_and_copy_subjects_jpg(
+                    train_data,
+                    output_dir,
+                    'train',
+                    image_size=args.image_size,
+                    central_slices=args.central_slices,
+                    reorient_ras=args.reorient_ras,
+                    resample_mm=args.resample_mm,
+                    slice_axis=args.slice_axis,
+                    rotate_k=args.rotate_k,
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
+                val_count = convert_and_copy_subjects_jpg(
+                    val_data,
+                    output_dir,
+                    'val',
+                    image_size=args.image_size,
+                    central_slices=args.central_slices,
+                    reorient_ras=args.reorient_ras,
+                    resample_mm=args.resample_mm,
+                    slice_axis=args.slice_axis,
+                    rotate_k=args.rotate_k,
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
+                test_count = convert_and_copy_subjects_jpg(
+                    test_data,
+                    output_dir,
+                    'test',
+                    image_size=args.image_size,
+                    central_slices=args.central_slices,
+                    reorient_ras=args.reorient_ras,
+                    resample_mm=args.resample_mm,
+                    slice_axis=args.slice_axis,
+                    rotate_k=args.rotate_k,
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
+            else:
+                train_count = convert_and_copy_subjects(
+                    train_data,
+                    output_dir,
+                    'train',
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
+                val_count = convert_and_copy_subjects(
+                    val_data,
+                    output_dir,
+                    'val',
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
+                test_count = convert_and_copy_subjects(
+                    test_data,
+                    output_dir,
+                    'test',
+                    hdbet=args.hdbet,
+                    hdbet_device=args.hdbet_device,
+                    hdbet_fast=args.hdbet_fast,
+                    hdbet_tta=args.hdbet_tta,
+                )
 
-        summary = save_split_info(train_data, val_data, test_data, output_dir)
+        if args.k_folds and args.k_folds > 1:
+            save_kfold_info(folds, test_data, output_dir, random_seed=fold_seed)
+        elif not args.single_dir:
+            save_split_info(train_data, val_data, test_data, output_dir)
+        else:
+            save_split_info(train_data, val_data, test_data, output_dir)
 
         print("\n" + "=" * 70)
         print("Dataset preprocessing completed!")
         print("=" * 70)
         print(f"\nOutput directory: {output_dir}")
-        print("\nDataset structure:")
-        print("  train/")
-        print(f"    normal/     ({train_count['normal']} files)")
-        print(f"    alzheimer/  ({train_count['alzheimer']} files)")
-        print("  val/")
-        print(f"    normal/     ({val_count['normal']} files)")
-        print(f"    alzheimer/  ({val_count['alzheimer']} files)")
-        print("  test/")
-        print(f"    normal/     ({test_count['normal']} files)")
-        print(f"    alzheimer/  ({test_count['alzheimer']} files)")
-        print("  split_info/")
-        print("    train_split.json")
-        print("    val_split.json")
-        print("    test_split.json")
-        print("    summary.json")
-        print("    cdr_distribution.json")
+        if args.single_dir:
+            print("\nDataset structure:")
+            print("  all/")
+            print(f"    normal/     ({all_count['normal']} files)")
+            print(f"    alzheimer/  ({all_count['alzheimer']} files)")
+            print("  split_info/")
+            if args.k_folds and args.k_folds > 1:
+                print("    folds.json")
+                print("    folds_summary.json")
+                if test_data:
+                    print("    test_split.json")
+                    print("    test_split.csv")
+            else:
+                print("    train_split.json")
+                print("    val_split.json")
+                print("    test_split.json")
+                print("    summary.json")
+                print("    cdr_distribution.json")
+            if all_count['errors'] > 0:
+                print(f"\nWarning: {all_count['errors']} subjects failed to convert")
+        else:
+            print("\nDataset structure:")
+            print("  train/")
+            print(f"    normal/     ({train_count['normal']} files)")
+            print(f"    alzheimer/  ({train_count['alzheimer']} files)")
+            print("  val/")
+            print(f"    normal/     ({val_count['normal']} files)")
+            print(f"    alzheimer/  ({val_count['alzheimer']} files)")
+            print("  test/")
+            print(f"    normal/     ({test_count['normal']} files)")
+            print(f"    alzheimer/  ({test_count['alzheimer']} files)")
+            print("  split_info/")
+            print("    train_split.json")
+            print("    val_split.json")
+            print("    test_split.json")
+            print("    summary.json")
+            print("    cdr_distribution.json")
 
-        if train_count['errors'] + val_count['errors'] + test_count['errors'] > 0:
-            total_errors = train_count['errors'] + val_count['errors'] + test_count['errors']
-            print(f"\nWarning: {total_errors} subjects failed to convert")
+            if train_count['errors'] + val_count['errors'] + test_count['errors'] > 0:
+                total_errors = train_count['errors'] + val_count['errors'] + test_count['errors']
+                print(f"\nWarning: {total_errors} subjects failed to convert")
     else:
         print("\n" + "=" * 70)
         print("Dry run completed - no files were converted/copied")
@@ -195,6 +323,29 @@ if __name__ == "__main__":
         default=0.15,
         help='Test set ratio (default: 0.15)'
     )
+    parser.add_argument(
+        '--k_folds',
+        type=int,
+        default=0,
+        help='Number of stratified folds to create (subject-level). Set >1 to enable.'
+    )
+    parser.add_argument(
+        '--single_dir',
+        action='store_true',
+        help='Store all data under output_dir/all (no train/val/test folders)'
+    )
+    parser.add_argument(
+        '--fold_seed',
+        type=int,
+        default=None,
+        help='Seed for k-fold splitting (default: use --seed)'
+    )
+    parser.add_argument(
+        '--fold_val_ratio',
+        type=float,
+        default=0.1,
+        help='Validation ratio within trainval pool for each fold (default: 0.1)'
+    )
 
     parser.add_argument(
         '--seed',
@@ -228,6 +379,18 @@ if __name__ == "__main__":
         default=120,
         help='Number of central axial slices to export (JPG mode)'
     )
+    parser.add_argument(
+        '--slice_axis',
+        type=int,
+        default=2,
+        help='Slice axis for JPG export: 0, 1, or 2 (default: 2)'
+    )
+    parser.add_argument(
+        '--rotate_k',
+        type=int,
+        default=1,
+        help='Rotate slices by 90*k degrees (default: 1). Set 0 to disable.'
+    )
 
     parser.add_argument(
         '--resample_mm',
@@ -248,6 +411,27 @@ if __name__ == "__main__":
         help='Disable reorientation to RAS+ (JPG mode)'
     )
     parser.set_defaults(reorient_ras=True)
+
+    parser.add_argument(
+        '--hdbet',
+        action='store_true',
+        help='Apply HD-BET skull stripping before conversion/slicing'
+    )
+    parser.add_argument(
+        '--hdbet_device',
+        default='cpu',
+        help='HD-BET device (cpu or cuda)'
+    )
+    parser.add_argument(
+        '--hdbet_fast',
+        action='store_true',
+        help='Use HD-BET fast mode'
+    )
+    parser.add_argument(
+        '--hdbet_tta',
+        action='store_true',
+        help='Use HD-BET test-time augmentation'
+    )
 
     parser.add_argument(
         '--verbose',
