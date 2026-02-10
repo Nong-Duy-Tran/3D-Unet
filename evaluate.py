@@ -2,6 +2,7 @@
 Evaluation script for trained model
 """
 import os
+import random
 import argparse
 import torch
 import numpy as np
@@ -14,6 +15,23 @@ from sklearn.metrics import (
 from model import get_model
 from dataset import get_dataloaders
 from utils import plot_confusion_matrix, plot_roc_curve, load_checkpoint
+
+
+def set_seed(seed=42):
+    """
+    Set random seed for reproducibility
+    
+    Args:
+        seed: Random seed value
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 
 def evaluate_model(model, dataloader, device):
@@ -64,7 +82,9 @@ def evaluate_model(model, dataloader, device):
     return metrics, all_labels, all_preds, all_probs
 
 
-def main(args):
+def main(args):    # Set seed for reproducibility
+    set_seed(args.seed)
+    print(f"Set random seed to: {args.seed}")
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -132,7 +152,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to evaluation data directory')
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet', 'swinunet'],
+                       choices=['simple', 'unet', 'resunet', 'swinunet', 'compact'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features (for CNN models)')
@@ -159,6 +179,8 @@ if __name__ == "__main__":
                        help='Device (cuda or cpu)')
     parser.add_argument('--save_dir', type=str, default='evaluation_results',
                        help='Directory to save results')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for reproducibility')
     
     args = parser.parse_args()
     main(args)

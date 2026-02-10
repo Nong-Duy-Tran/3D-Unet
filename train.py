@@ -2,6 +2,7 @@
 Training script for Alzheimer's classification baseline
 """
 import os
+import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -22,6 +23,23 @@ from utils import (
 )
 
 load_dotenv()
+
+
+def set_seed(seed=42):
+    """
+    Set random seed for reproducibility
+    
+    Args:
+        seed: Random seed value
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     """Train for one epoch"""
@@ -130,6 +148,10 @@ def validate(model, dataloader, criterion, device, epoch):
 
 
 def main(args):
+    # Set seed for reproducibility
+    set_seed(args.seed)
+    print(f"Set random seed to: {args.seed}")
+    
     # Setup
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.log_dir, exist_ok=True)
@@ -403,6 +425,10 @@ if __name__ == "__main__":
     # Wandb
     parser.add_argument('--use_wandb', action='store_true',
                        help='Use Weights & Biases for logging')
+    
+    # Reproducibility
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for reproducibility')
     
     args = parser.parse_args()
     main(args)
