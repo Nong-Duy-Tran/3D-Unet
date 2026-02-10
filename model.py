@@ -160,6 +160,73 @@ class SimpleUNet3DClassifier(nn.Module):
         return logits
 
 
+class CompactUNet3DClassifier(nn.Module):
+    """
+    Compact 3D U-Net for classification with 2-3M parameters
+    Lighter version of SimpleUNet3DClassifier for faster training
+    
+    Args:
+        in_channels: Number of input channels (default: 1 for MRI)
+        num_classes: Number of output classes (default: 2 for binary)
+        base_features: Base number of features (default: 24)
+    """
+    
+    def __init__(self, in_channels=1, num_classes=2, base_features=24):
+        super(CompactUNet3DClassifier, self).__init__()
+        
+        # Encoder with 4 levels instead of 5
+        self.enc1 = self._make_encoder(in_channels, base_features)
+        self.pool1 = nn.MaxPool3d(2)
+        
+        self.enc2 = self._make_encoder(base_features, base_features * 2)
+        self.pool2 = nn.MaxPool3d(2)
+        
+        self.enc3 = self._make_encoder(base_features * 2, base_features * 4)
+        self.pool3 = nn.MaxPool3d(2)
+        
+        # Bottleneck
+        self.bottleneck = self._make_encoder(base_features * 4, base_features * 8)
+        
+        # Global pooling
+        self.global_pool = nn.AdaptiveAvgPool3d(1)
+        
+        # Classifier with fewer parameters
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.4),
+            nn.Linear(base_features * 8, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+    
+    def _make_encoder(self, in_channels, out_channels):
+        """Create compact encoder block with single conv + batch norm"""
+        return nn.Sequential(
+            nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm3d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+    
+    def forward(self, x):
+        # Encoder path
+        x1 = self.enc1(x)
+        x2 = self.enc2(self.pool1(x1))
+        x3 = self.enc3(self.pool2(x2))
+        
+        # Bottleneck
+        x4 = self.bottleneck(self.pool3(x3))
+        
+        # Global pooling and classification
+        pooled = self.global_pool(x4)
+        logits = self.classifier(pooled)
+        
+        return logits
+
+
 class SwinUNet3DClassifier(nn.Module):
     """
     Swin-UNETR adapted for classification
@@ -252,7 +319,7 @@ def get_model(model_name='simple', **kwargs):
     Factory function to create classification model
     
     Args:
-        model_name: 'simple', 'unet', 'resunet', or 'swinunet'
+        model_name: 'simple', 'compact', 'unet', 'resunet', or 'swinunet'
         **kwargs: Additional arguments for model
     
     Returns:
@@ -260,6 +327,8 @@ def get_model(model_name='simple', **kwargs):
     """
     if model_name == 'simple':
         return SimpleUNet3DClassifier(**kwargs)
+    elif model_name == 'compact':
+        return CompactUNet3DClassifier(**kwargs)
     elif model_name == 'unet':
         return UNet3DClassifier(use_residual=False, **kwargs)
     elif model_name == 'resunet':
@@ -267,23 +336,32 @@ def get_model(model_name='simple', **kwargs):
     elif model_name == 'swinunet':
         return SwinUNet3DClassifier(**kwargs)
     else:
-        raise ValueError(f"Unknown model: {model_name}. Choose from: simple, unet, resunet, swinunet")
+        raise ValueError(f"Unknown model: {model_name}. Choose from: simple, compact, unet, resunet, swinunet")
 
 
 if __name__ == "__main__":
     # Test models
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    print("Testing Simple U-Net Classifier...")
-    model_simple = SimpleUNet3DClassifier(in_channels=1, num_classes=2, base_features=32)
-    model_simple = model_simple.to(device)
+    print("Testing Compact U-Net Classifier...")
+    model_compact = CompactUNet3DClassifier(in_channels=1, num_classes=2, base_features=24)
+    model_compact = model_compact.to(device)
     
     # Test input
     x = torch.randn(2, 1, 64, 64, 64).to(device)
-    output = model_simple(x)
+    output = model_compact(x)
     print(f"Output shape: {output.shape}")  # Should be [2, 2]
     
     # Count parameters
+    total_params = sum(p.numel() for p in model_compact.parameters())
+    print(f"Total parameters (Compact): {total_params:,}")
+    
+    print("\nTesting Simple U-Net Classifier...")
+    model_simple = SimpleUNet3DClassifier(in_channels=1, num_classes=2, base_features=32)
+    model_simple = model_simple.to(device)
+    output = model_simple(x)
+    print(f"Output shape: {output.shape}")  # Should be [2, 2]
+    
     total_params = sum(p.numel() for p in model_simple.parameters())
     print(f"Total parameters (Simple): {total_params:,}")
     

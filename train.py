@@ -10,6 +10,9 @@ from tqdm import tqdm
 import numpy as np
 import argparse
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from monai.losses import FocalLoss
+import wandb
+from dotenv import load_dotenv
 
 from model import get_model
 from dataset import get_dataloaders
@@ -18,6 +21,7 @@ from utils import (
     plot_roc_curve, plot_training_curves, get_class_weights
 )
 
+load_dotenv()
 
 def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     """Train for one epoch"""
@@ -34,7 +38,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         
         optimizer.zero_grad()
         outputs = model(images)
-        loss = criterion(outputs, labels)
+        
+        # Convert labels to one-hot encoding for FocalLoss
+        if isinstance(criterion, FocalLoss):
+            labels_onehot = torch.zeros_like(outputs)
+            labels_onehot.scatter_(1, labels.unsqueeze(1), 1)
+            loss = criterion(outputs, labels_onehot)
+        else:
+            loss = criterion(outputs, labels)
         
         loss.backward()
         optimizer.step()
@@ -79,7 +90,14 @@ def validate(model, dataloader, criterion, device, epoch):
             labels = labels.to(device)
             
             outputs = model(images)
-            loss = criterion(outputs, labels)
+            
+            # Convert labels to one-hot encoding for FocalLoss
+            if isinstance(criterion, FocalLoss):
+                labels_onehot = torch.zeros_like(outputs)
+                labels_onehot.scatter_(1, labels.unsqueeze(1), 1)
+                loss = criterion(outputs, labels_onehot)
+            else:
+                loss = criterion(outputs, labels)
             
             running_loss += loss.item()
             
@@ -118,6 +136,29 @@ def main(args):
     
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
+    # Initialize wandb if enabled
+    if args.use_wandb:
+        wandb_config = {
+            'model': args.model,
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+            'learning_rate': args.lr,
+            'weight_decay': args.weight_decay,
+            'loss_fn': args.loss_fn,
+            'use_class_weights': args.use_class_weights,
+            'target_shape': args.target_shape,
+            'base_features': args.base_features,
+            'feature_size': args.feature_size,
+        }
+        
+        wandb.init(
+            project="Alzheimer Classification MRI",
+            name=args.model_name,
+            config=wandb_config,
+            tags=[args.model, args.loss_fn],
+            notes=f"Training {args.model} model for Alzheimer's classification"
+        )
     
     # TensorBoard
     writer = SummaryWriter(args.log_dir)
@@ -158,21 +199,35 @@ def main(args):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total parameters: {total_params:,}")
     
-    # Loss with class weights
-    if args.use_class_weights and hasattr(train_loader.dataset, 'labels'):
-        class_weights = get_class_weights(train_loader.dataset.labels)
-        class_weights = torch.FloatTensor(class_weights).to(device)
-        criterion = nn.CrossEntropyLoss(weight=class_weights)
-        print(f"Using class weights: {class_weights}")
-    else:
-        criterion = nn.CrossEntropyLoss()
+    # Loss function
+    if args.loss_fn == 'focal':
+        criterion = FocalLoss(alpha=0.25, gamma=1.2, reduction='mean')
+        print(f"Using FocalLoss (alpha=0.25, gamma=1.2)")
+    elif args.loss_fn == 'bce':
+        if args.use_class_weights and hasattr(train_loader.dataset, 'labels'):
+            class_weights = get_class_weights(train_loader.dataset.labels)
+            pos_weight = torch.FloatTensor([class_weights[1]]).to(device)
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+            print(f"Using BCEWithLogitsLoss with pos_weight: {pos_weight}")
+        else:
+            criterion = nn.BCEWithLogitsLoss()
+            print("Using BCEWithLogitsLoss")
+    else:  # crossentropy
+        if args.use_class_weights and hasattr(train_loader.dataset, 'labels'):
+            class_weights = get_class_weights(train_loader.dataset.labels)
+            class_weights = torch.FloatTensor(class_weights).to(device)
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+            print(f"Using CrossEntropyLoss with class weights: {class_weights}")
+        else:
+            criterion = nn.CrossEntropyLoss()
+            print("Using CrossEntropyLoss")
     
     # Optimizer
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     
     # Scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10
+    scheduler = optim.lr_scheduler.MultiStepLR(
+        optimizer, milestones=[50, 100], gamma=0.5
     )
     
     # Training loop
@@ -199,7 +254,7 @@ def main(args):
         )
         
         # Update scheduler
-        scheduler.step(val_loss)
+        scheduler.step()
         
         # Print metrics
         print(f"\nTrain Loss: {train_loss:.4f} | Train Acc: {train_metrics['accuracy']:.4f}")
@@ -215,6 +270,25 @@ def main(args):
         writer.add_scalar('F1/val', val_metrics['f1'], epoch)
         writer.add_scalar('AUC/val', val_metrics['auc'], epoch)
         
+        # Log to wandb
+        if args.use_wandb:
+            wandb.log({
+                'epoch': epoch,
+                'train/loss': train_loss,
+                'train/accuracy': train_metrics['accuracy'],
+                'train/precision': train_metrics['precision'],
+                'train/recall': train_metrics['recall'],
+                'train/f1': train_metrics['f1'],
+                'train/auc': train_metrics['auc'],
+                'val/loss': val_loss,
+                'val/accuracy': val_metrics['accuracy'],
+                'val/precision': val_metrics['precision'],
+                'val/recall': val_metrics['recall'],
+                'val/f1': val_metrics['f1'],
+                'val/auc': val_metrics['auc'],
+                'learning_rate': optimizer.param_groups[0]['lr']
+            }, step=epoch)
+        
         # Save history
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -224,29 +298,51 @@ def main(args):
         # Save best model
         if val_accs[-1] >= best_val_acc:
             best_val_acc = val_accs[-1]
+            checkpoint_path = os.path.join(args.checkpoint_dir, f"{args.model_name}.pth")
             save_checkpoint(
                 model, optimizer, epoch, best_val_loss, best_val_acc,
-                os.path.join(args.checkpoint_dir, 'best_model.pth')
+                checkpoint_path
             )
             
             # Save confusion matrix and ROC curve for best model
+            cm_path = os.path.join(args.log_dir, 'confusion_matrix.png')
+            roc_path = os.path.join(args.log_dir, 'roc_curve.png')
+            
             plot_confusion_matrix(
                 val_preds['labels'], val_preds['preds'],
-                save_path=os.path.join(args.log_dir, 'confusion_matrix.png')
+                save_path=cm_path
             )
             plot_roc_curve(
                 val_preds['labels'], val_preds['probs'],
-                save_path=os.path.join(args.log_dir, 'roc_curve.png')
+                save_path=roc_path
             )
+            
+            # Log to wandb
+            if args.use_wandb:
+                wandb.log({
+                    'best_val_accuracy': best_val_acc,
+                    'confusion_matrix': wandb.Image(cm_path),
+                    'roc_curve': wandb.Image(roc_path)
+                })
+                # Save model artifact
+                artifact = wandb.Artifact(f'{args.model_name}_model', type='model')
+                artifact.add_file(checkpoint_path)
+                wandb.log_artifact(artifact)
     
     print("\nTraining completed!")
-    print(f"Best validation loss: {best_val_loss:.4f}")
+    print(f"Best validation accuracy: {best_val_acc:.4f}")
     
     # Plot training curves
+    curves_path = os.path.join(args.log_dir, 'training_curves.png')
     plot_training_curves(
         train_losses, val_losses, train_accs, val_accs,
-        save_path=os.path.join(args.log_dir, 'training_curves.png')
+        save_path=curves_path
     )
+    
+    # Log final training curves to wandb
+    if args.use_wandb:
+        wandb.log({'training_curves': wandb.Image(curves_path)})
+        wandb.finish()
     
     writer.close()
 
@@ -264,7 +360,7 @@ if __name__ == "__main__":
     
     # Model
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet', 'swinunet'],
+                       choices=['simple', 'compact', 'unet', 'resunet', 'swinunet'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
@@ -282,6 +378,9 @@ if __name__ == "__main__":
                        help='Weight decay')
     parser.add_argument('--use_class_weights', action='store_true',
                        help='Use class weights for imbalanced data')
+    parser.add_argument('--loss_fn', type=str, default='crossentropy',
+                       choices=['crossentropy', 'bce', 'focal'],
+                       help='Loss function to use')
     
     # Data processing
     parser.add_argument('--target_shape', type=int, nargs=3, default=[96, 96, 96],
@@ -296,8 +395,14 @@ if __name__ == "__main__":
     # Output
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints',
                        help='Checkpoint directory')
+    parser.add_argument('--model_name', type=str, default='best_model',
+                       help='Model name for saving')
     parser.add_argument('--log_dir', type=str, default='logs',
                        help='Log directory')
+    
+    # Wandb
+    parser.add_argument('--use_wandb', action='store_true',
+                       help='Use Weights & Biases for logging')
     
     args = parser.parse_args()
     main(args)

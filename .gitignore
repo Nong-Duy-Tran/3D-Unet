@@ -9,6 +9,10 @@ __pycache__/
 venv/
 env/
 .venv
+.env
+
+# Wandb
+wandb
 
 # Data
 data/
