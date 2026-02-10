@@ -14,7 +14,7 @@ from sklearn.metrics import (
 
 from model import get_model
 from dataset import get_dataloaders
-from utils import plot_confusion_matrix, plot_roc_curve, load_checkpoint
+from util.utils import plot_confusion_matrix, plot_roc_curve, load_checkpoint
 
 
 def set_seed(seed=42):

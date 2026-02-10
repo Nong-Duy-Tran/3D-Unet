@@ -9,7 +9,7 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
 
 
-def save_checkpoint(model, optimizer, epoch, best_val_loss, best_val_acc, filepath):
+def save_checkpoint(model, optimizer, epoch, best_val_acc, filepath):
     """Save model checkpoint"""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     
@@ -17,7 +17,6 @@ def save_checkpoint(model, optimizer, epoch, best_val_loss, best_val_acc, filepa
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'best_val_loss': best_val_loss,
         'best_val_acc': best_val_acc
     }
     

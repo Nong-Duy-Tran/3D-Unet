@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 from model import get_model
 from dataset import get_dataloaders
-from utils import (
+from util.utils import (
     save_checkpoint, load_checkpoint, plot_confusion_matrix,
     plot_roc_curve, plot_training_curves, get_class_weights
 )
@@ -321,10 +321,7 @@ def main(args):
         if val_accs[-1] >= best_val_acc:
             best_val_acc = val_accs[-1]
             checkpoint_path = os.path.join(args.checkpoint_dir, f"{args.model_name}.pth")
-            save_checkpoint(
-                model, optimizer, epoch, best_val_loss, best_val_acc,
-                checkpoint_path
-            )
+            save_checkpoint(model, optimizer, epoch, best_val_acc, checkpoint_path)
             
             # Save confusion matrix and ROC curve for best model
             cm_path = os.path.join(args.log_dir, 'confusion_matrix.png')
