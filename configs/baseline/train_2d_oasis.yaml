@@ -69,10 +69,10 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    tags: [deit_base_attn_120sl, jpg, oasis, stratified_5folds]
+    tags: [deit_base_attn_120sl, jpg, oasis, stratified_5folds, volume_augmentation]
 
 checkpoint:
-  dir: checkpoints/deit_base_attn_120sl_oasis_5folds
+  dir: checkpoints/deit_base_attn_120sl_oasis_5folds_volaug
   monitor: val/auc_epoch
   mode: max
 

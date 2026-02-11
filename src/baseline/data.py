@@ -361,8 +361,7 @@ class MRIVolumeJPGDataset(Dataset):
             volume = (volume - mean) / std
         return volume
 
-    @staticmethod
-    def _augment(volume: np.ndarray) -> np.ndarray:
+    def _augment(self, volume: np.ndarray) -> np.ndarray:
         if random.random() > 0.5:
             volume = np.flip(volume, axis=1).copy()
         if random.random() > 0.5:

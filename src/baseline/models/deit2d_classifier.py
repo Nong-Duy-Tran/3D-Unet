@@ -3,15 +3,39 @@ import torch.nn as nn
 
 
 class SliceAttentionPool(nn.Module):
-    def __init__(self, embed_dim):
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int | None = None,
+        dropout: float = 0.0,
+        activation: str = "tanh",
+        use_layernorm: bool = False,
+    ):
         super().__init__()
-        self.attn = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.Tanh(),
-            nn.Linear(embed_dim // 2, 1),
-        )
+        hidden_dim = hidden_dim or (embed_dim // 2)
+        act = activation.lower()
+        if act == "gelu":
+            activation_layer = nn.GELU()
+        elif act == "relu":
+            activation_layer = nn.ReLU(inplace=True)
+        else:
+            activation_layer = nn.Tanh()
 
-    def forward(self, x):
+        layers: list[nn.Module] = []
+        if use_layernorm:
+            layers.append(nn.LayerNorm(embed_dim))
+        layers.extend(
+            [
+                nn.Linear(embed_dim, hidden_dim),
+                activation_layer,
+            ]
+        )
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(hidden_dim, 1))
+        self.attn = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         weights = self.attn(x)
         weights = torch.softmax(weights, dim=1)
         return (weights * x).sum(dim=1)
@@ -30,6 +54,10 @@ class DeiT2DClassifier(nn.Module):
         drop_path_rate=0.2,
         attn_drop_rate=0.1,
         dropout=0.1,
+        slice_attn_hidden_dim: int | None = None,
+        slice_attn_dropout: float = 0.0,
+        slice_attn_activation: str = "tanh",
+        slice_attn_use_layernorm: bool = False,
     ):
         super().__init__()
         try:
@@ -49,7 +77,13 @@ class DeiT2DClassifier(nn.Module):
         embed_dim = getattr(self.encoder, "num_features", None)
         if embed_dim is None:
             raise ValueError("Unable to infer embedding dim from timm model.")
-        self.pool = SliceAttentionPool(embed_dim)
+        self.pool = SliceAttentionPool(
+            embed_dim,
+            hidden_dim=slice_attn_hidden_dim,
+            dropout=slice_attn_dropout,
+            activation=slice_attn_activation,
+            use_layernorm=slice_attn_use_layernorm,
+        )
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_dim, num_classes)
 
@@ -76,4 +110,8 @@ def default_config():
         "drop_path_rate": 0.2,
         "attn_drop_rate": 0.1,
         "dropout": 0.1,
+        "slice_attn_hidden_dim": None,
+        "slice_attn_dropout": 0.0,
+        "slice_attn_activation": "tanh",
+        "slice_attn_use_layernorm": False,
     }

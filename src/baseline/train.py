@@ -139,6 +139,10 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                         "drop_path_rate": cfg_in.model.drop_path_rate,
                         "attn_drop_rate": cfg_in.model.attn_drop_rate,
                         "dropout": cfg_in.model.dropout,
+                        "slice_attn_hidden_dim": getattr(cfg_in.model, "slice_attn_hidden_dim", None),
+                        "slice_attn_dropout": float(getattr(cfg_in.model, "slice_attn_dropout", 0.0)),
+                        "slice_attn_activation": getattr(cfg_in.model, "slice_attn_activation", "tanh"),
+                        "slice_attn_use_layernorm": bool(getattr(cfg_in.model, "slice_attn_use_layernorm", False)),
                     }
                 )
                 return model_kwargs
