@@ -20,12 +20,11 @@ data:
   randaugment_ops: 2
   randaugment_mag: 9
   num_slices: 120
-  strategy: uniform
-  val_strategy: uniform
+  slice_strategy_train: uniform
+  slice_strategy_val: uniform
 
 model:
-  name: deit2d
-  timm_name: deit_base_patch16_224.fb_in1k
+  name: vgg16
   pretrained: true
   num_classes: 2
   in_channels: 1
@@ -45,16 +44,17 @@ training:
   loss:
     label_smoothing: 0.1
   accelerator: gpu
-  devices: [2]
+  devices: [3]
   precision: 16
   accumulate_grad_batches: 4
   freeze_backbone: true
+  freeze_backbone_ratio: 1.0
   class_weights:
     enabled: true
   lr_scheduler:
     enabled: true
     name: CosineWarmup
-    warmup_epochs: 10
+    warmup_epochs: 3
     warmup_start_factor: 0.1
     eta_min: 1.0e-6
   early_stopping:
@@ -69,10 +69,10 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    tags: [deit_base_attn_120sl, jpg, oasis, stratified_5folds, volume_augmentation]
+    tags: [vgg_base_attn_100sl, jpg, oasis, stratified_5folds, nonblank_uniform]
 
 checkpoint:
-  dir: checkpoints/deit_base_attn_120sl_oasis_5folds_volaug
+  dir: checkpoints/vgg_base_attn_100sl_oasis_5folds
   monitor: val/auc_epoch
   mode: max
 

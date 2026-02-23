@@ -138,7 +138,10 @@ def convert_and_copy_subjects_jpg(
     reorient_ras=True,
     resample_mm=1.0,
     slice_axis: int = 2,
-    rotate_k: int = 1,
+    rotate_k: int = 0,
+    crop_to_nonblank: bool = False,
+    nonblank_intensity_threshold: int = 5,
+    nonblank_min_ratio: float = 0.001,
     hdbet: bool = False,
     hdbet_device: str = "cpu",
     hdbet_fast: bool = False,
@@ -179,7 +182,29 @@ def convert_and_copy_subjects_jpg(
             if axis not in (0, 1, 2):
                 raise ValueError(f"slice_axis must be 0, 1, or 2 (got {axis})")
             axis_total = volume_u8.shape[axis]
-            indices = center_slice_indices(axis_total, int(central_slices))
+            if int(central_slices) <= 0:
+                indices = list(range(axis_total))
+            else:
+                indices = center_slice_indices(axis_total, int(central_slices))
+
+            if crop_to_nonblank:
+                intensity_thresh = max(0, int(nonblank_intensity_threshold))
+                ratio_thresh = max(0.0, float(nonblank_min_ratio))
+
+                def _nonblank_ratio(slice_idx: int) -> float:
+                    if axis == 0:
+                        sl = volume_u8[slice_idx, :, :]
+                    elif axis == 1:
+                        sl = volume_u8[:, slice_idx, :]
+                    else:
+                        sl = volume_u8[:, :, slice_idx]
+                    return float((sl > intensity_thresh).sum()) / float(sl.size)
+
+                valid = [i for i in indices if _nonblank_ratio(i) >= ratio_thresh]
+                if valid:
+                    first_idx = valid[0]
+                    last_idx = valid[-1]
+                    indices = [i for i in indices if first_idx <= i <= last_idx]
 
             if class_name == 'alzheimer':
                 out_dir = alzheimer_dir

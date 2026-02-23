@@ -134,6 +134,9 @@ def main(args):
                     resample_mm=args.resample_mm,
                     slice_axis=args.slice_axis,
                     rotate_k=args.rotate_k,
+                    crop_to_nonblank=args.crop_to_nonblank,
+                    nonblank_intensity_threshold=args.nonblank_intensity_threshold,
+                    nonblank_min_ratio=args.nonblank_min_ratio,
                     hdbet=args.hdbet,
                     hdbet_device=args.hdbet_device,
                     hdbet_fast=args.hdbet_fast,
@@ -161,6 +164,9 @@ def main(args):
                     resample_mm=args.resample_mm,
                     slice_axis=args.slice_axis,
                     rotate_k=args.rotate_k,
+                    crop_to_nonblank=args.crop_to_nonblank,
+                    nonblank_intensity_threshold=args.nonblank_intensity_threshold,
+                    nonblank_min_ratio=args.nonblank_min_ratio,
                     hdbet=args.hdbet,
                     hdbet_device=args.hdbet_device,
                     hdbet_fast=args.hdbet_fast,
@@ -176,6 +182,9 @@ def main(args):
                     resample_mm=args.resample_mm,
                     slice_axis=args.slice_axis,
                     rotate_k=args.rotate_k,
+                    crop_to_nonblank=args.crop_to_nonblank,
+                    nonblank_intensity_threshold=args.nonblank_intensity_threshold,
+                    nonblank_min_ratio=args.nonblank_min_ratio,
                     hdbet=args.hdbet,
                     hdbet_device=args.hdbet_device,
                     hdbet_fast=args.hdbet_fast,
@@ -191,6 +200,9 @@ def main(args):
                     resample_mm=args.resample_mm,
                     slice_axis=args.slice_axis,
                     rotate_k=args.rotate_k,
+                    crop_to_nonblank=args.crop_to_nonblank,
+                    nonblank_intensity_threshold=args.nonblank_intensity_threshold,
+                    nonblank_min_ratio=args.nonblank_min_ratio,
                     hdbet=args.hdbet,
                     hdbet_device=args.hdbet_device,
                     hdbet_fast=args.hdbet_fast,
@@ -377,7 +389,7 @@ if __name__ == "__main__":
         '--central_slices',
         type=int,
         default=120,
-        help='Number of central axial slices to export (JPG mode)'
+        help='Number of central slices to export (JPG mode). Set <=0 to export all slices in the axis.'
     )
     parser.add_argument(
         '--slice_axis',
@@ -388,8 +400,25 @@ if __name__ == "__main__":
     parser.add_argument(
         '--rotate_k',
         type=int,
-        default=1,
-        help='Rotate slices by 90*k degrees (default: 1). Set 0 to disable.'
+        default=0,
+        help='Rotate slices by 90*k degrees (default: 0). Set 0 to disable.'
+    )
+    parser.add_argument(
+        '--crop_to_nonblank',
+        action='store_true',
+        help='Crop exported JPG stack to first/last non-blank slice'
+    )
+    parser.add_argument(
+        '--nonblank_intensity_threshold',
+        type=int,
+        default=5,
+        help='Pixel intensity threshold used for non-blank detection'
+    )
+    parser.add_argument(
+        '--nonblank_min_ratio',
+        type=float,
+        default=0.001,
+        help='Minimum ratio of pixels above threshold to count slice as non-blank'
     )
 
     parser.add_argument(

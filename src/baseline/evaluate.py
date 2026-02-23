@@ -136,6 +136,17 @@ def _model_kwargs(args):
                 "dropout": args.dropout,
             }
         )
+    elif args.model in {'vgg2d', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn'}:
+        vgg_name = args.vgg_name if args.model == "vgg2d" else args.model
+        kwargs.update(
+            {
+                "vgg_name": vgg_name,
+                "pretrained": False,
+                "image_size": args.image_size,
+                "in_channels": 3 if args.rgb_mode else 1,
+                "dropout": args.dropout,
+            }
+        )
     return kwargs
 
 
@@ -199,7 +210,11 @@ if __name__ == "__main__":
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to evaluation data directory')
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet', 'vit2d', 'swin2d', 'swin3d', 'deit2d'],
+                       choices=[
+                           'simple', 'unet', 'resunet', 'vit2d', 'swin2d', 'swin3d', 'deit2d',
+                           'vgg2d', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn', 'vgg19',
+                           'vgg19_bn'
+                       ],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
@@ -223,6 +238,8 @@ if __name__ == "__main__":
                        help='Patch size for ViT')
     parser.add_argument('--timm_name', type=str, default='deit_base_patch16_224.fb_in1k',
                        help='timm model name for DeiT')
+    parser.add_argument('--vgg_name', type=str, default='vgg16_bn',
+                       help='VGG model name for VGG2D')
     parser.add_argument('--drop_path_rate', type=float, default=0.2,
                        help='DeiT drop path rate')
     parser.add_argument('--attn_drop_rate', type=float, default=0.1,

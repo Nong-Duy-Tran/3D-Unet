@@ -5,6 +5,7 @@ from .vit2d_classifier import ViT2DClassifier
 from .swin2d_classifier import Swin2DClassifier
 from .swin3d_classifier import Swin3DClassifier
 from .deit2d_classifier import DeiT2DClassifier
+from .vgg2d_classifier import VGG2DClassifier
 from .simple_unet2d_classifier import SimpleUNet2DClassifier
 
 __all__ = [
@@ -16,5 +17,6 @@ __all__ = [
     "Swin2DClassifier",
     "Swin3DClassifier",
     "DeiT2DClassifier",
+    "VGG2DClassifier",
     "SimpleUNet2DClassifier",
 ]

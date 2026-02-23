@@ -90,13 +90,20 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 **self._model_kwargs(cfg_in),
             )
             self._freeze_backbone = bool(getattr(cfg_in.training, "freeze_backbone", False))
+            self._freeze_backbone_ratio = float(getattr(cfg_in.training, "freeze_backbone_ratio", 1.0))
+            self._freeze_backbone_ratio = max(0.0, min(1.0, self._freeze_backbone_ratio))
+            self._freeze_backbone_all = self._freeze_backbone_ratio >= 1.0
             if self._freeze_backbone:
                 encoder = getattr(self.model, "encoder", None)
                 if encoder is None:
                     raise ValueError("freeze_backbone=true but model has no encoder to freeze.")
-                for param in encoder.parameters():
-                    param.requires_grad = False
-                encoder.eval()
+                encoder_params = list(encoder.parameters())
+                num_params_to_freeze = int(len(encoder_params) * self._freeze_backbone_ratio)
+                for i, param in enumerate(encoder_params):
+                    if i < num_params_to_freeze:
+                        param.requires_grad = False
+                if self._freeze_backbone_all:
+                    encoder.eval()
             loss_cfg = getattr(cfg_in.training, "loss", None)
             label_smoothing = 0.0
             if loss_cfg and getattr(loss_cfg, "label_smoothing", None) is not None:
@@ -108,7 +115,7 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
         def train(self, mode: bool = True):
             super().train(mode)
-            if self._freeze_backbone:
+            if self._freeze_backbone and self._freeze_backbone_all:
                 encoder = getattr(self.model, "encoder", None)
                 if encoder is not None:
                     encoder.eval()
@@ -120,6 +127,7 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 "in_channels": cfg_in.model.in_channels,
                 "num_classes": cfg_in.model.num_classes,
             }
+            vgg_model_names = {"vgg2d", "vgg11", "vgg11_bn", "vgg13", "vgg13_bn", "vgg16", "vgg16_bn", "vgg19", "vgg19_bn"}
             if cfg_in.model.name == "simple":
                 model_kwargs["base_features"] = cfg_in.model.base_features
                 return model_kwargs
@@ -138,6 +146,28 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                         "in_channels": in_channels,
                         "drop_path_rate": cfg_in.model.drop_path_rate,
                         "attn_drop_rate": cfg_in.model.attn_drop_rate,
+                        "dropout": cfg_in.model.dropout,
+                        "slice_attn_hidden_dim": getattr(cfg_in.model, "slice_attn_hidden_dim", None),
+                        "slice_attn_dropout": float(getattr(cfg_in.model, "slice_attn_dropout", 0.0)),
+                        "slice_attn_activation": getattr(cfg_in.model, "slice_attn_activation", "tanh"),
+                        "slice_attn_use_layernorm": bool(getattr(cfg_in.model, "slice_attn_use_layernorm", False)),
+                    }
+                )
+                return model_kwargs
+            if cfg_in.model.name in vgg_model_names:
+                image_size = getattr(cfg_in.model, "image_size", None)
+                if image_size is None:
+                    image_size = int(cfg_in.data.target_shape[1])
+                in_channels = cfg_in.model.in_channels
+                if getattr(cfg_in.data, "rgb_mode", False):
+                    in_channels = 3
+                default_vgg_name = cfg_in.model.name if cfg_in.model.name != "vgg2d" else "vgg16_bn"
+                model_kwargs.update(
+                    {
+                        "vgg_name": getattr(cfg_in.model, "vgg_name", default_vgg_name),
+                        "pretrained": cfg_in.model.pretrained,
+                        "image_size": image_size,
+                        "in_channels": in_channels,
                         "dropout": cfg_in.model.dropout,
                         "slice_attn_hidden_dim": getattr(cfg_in.model, "slice_attn_hidden_dim", None),
                         "slice_attn_dropout": float(getattr(cfg_in.model, "slice_attn_dropout", 0.0)),
