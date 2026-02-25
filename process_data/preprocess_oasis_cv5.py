@@ -8,10 +8,15 @@ This implements the outer loop of nested CV:
 - Stratified splitting maintains class balance
 - Subject-level splitting prevents data leakage
 - Inner validation split for early stopping
+
+Note: OASIS SUBJ_111 images are NOT skull-stripped (fill ratio ~39%).
+Use --skull_strip to apply HD-BET and remove skull/eyes/neck tissue.
 """
 import os
 import json
 import shutil
+import subprocess
+import tempfile
 import pandas as pd
 import argparse
 from pathlib import Path
@@ -267,49 +272,115 @@ def create_stratified_cv_splits(data, n_folds=5, val_ratio=0.2, random_seed=42):
     return cv_splits
 
 
-def convert_and_copy_subjects(data, output_dir, split_name):
+def skull_strip_with_hdbet(img, subject_id, device='cpu'):
+    """
+    Apply HD-BET skull stripping to remove skull, eyes, and neck tissue.
+
+    OASIS SUBJ_111 images are NOT skull-stripped (fill ratio ~39%).
+    HD-BET removes non-brain tissue, leaving only brain parenchyma (~15-20% fill).
+
+    Args:
+        img: nibabel image
+        subject_id: Subject ID for logging
+        device: 'cuda' or 'cpu'
+
+    Returns:
+        nibabel image with skull stripped, or original img if HD-BET fails
+    """
+    hd_bet_bin = '/home/ntq/miniconda3/envs/3dunet/bin/hd-bet'
+    if not os.path.exists(hd_bet_bin):
+        print(f"  Warning: hd-bet not found at {hd_bet_bin}, skipping skull stripping")
+        return img
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            in_path = os.path.join(tmpdir, f'{subject_id}_input.nii.gz')
+            out_path = os.path.join(tmpdir, f'{subject_id}_bet.nii.gz')
+
+            nib.save(img, in_path)
+
+            cmd = [
+                hd_bet_bin,
+                '-i', in_path,
+                '-o', out_path,
+                '-device', device,
+                '--disable_tta',
+            ]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=300
+            )
+
+            if result.returncode != 0:
+                print(f"  Warning: HD-BET failed for {subject_id}: {result.stderr[:200]}")
+                return img
+
+            if not os.path.exists(out_path):
+                print(f"  Warning: HD-BET output not found for {subject_id}")
+                return img
+
+            # Load data into memory before tmpdir is deleted (nibabel uses lazy loading)
+            bet_img = nib.load(out_path)
+            data = bet_img.get_fdata()
+            return nib.Nifti1Image(data, bet_img.affine, bet_img.header)
+
+    except subprocess.TimeoutExpired:
+        print(f"  Warning: HD-BET timed out for {subject_id}")
+        return img
+    except Exception as e:
+        print(f"  Warning: HD-BET error for {subject_id}: {e}")
+        return img
+
+
+def convert_and_copy_subjects(data, output_dir, split_name, skull_strip=False, bet_device='cpu'):
     """
     Convert Analyze format to NIfTI and copy files to output directory
-    
+
     Args:
         data: List of subject dictionaries
         output_dir: Output directory
-        split_name: 'train' or 'test'
+        split_name: 'train', 'val', or 'test'
+        skull_strip: Apply HD-BET skull stripping
+        bet_device: Device for HD-BET ('cpu' or 'cuda')
     """
     split_dir = Path(output_dir) / split_name
-    
+
     # Create class directories
     normal_dir = split_dir / 'normal'
     alzheimer_dir = split_dir / 'alzheimer'
     normal_dir.mkdir(parents=True, exist_ok=True)
     alzheimer_dir.mkdir(parents=True, exist_ok=True)
-    
+
     file_count = {'normal': 0, 'alzheimer': 0, 'errors': 0}
-    
+
     for item in data:
         try:
             img_file = Path(item['img_file'])
             subject_id = item['subject_id']
             class_name = item['class_name']
-            
+
             # Load Analyze format image
             img = nib.load(img_file)
-            
+
+            # Apply HD-BET skull stripping if requested
+            # OASIS SUBJ_111 fill ratio ~39% confirms non-brain tissue is present
+            if skull_strip:
+                img = skull_strip_with_hdbet(img, subject_id, device=bet_device)
+
             # Determine output path
             out_filename = f"{subject_id}.nii.gz"
             if class_name == 'alzheimer':
                 out_path = alzheimer_dir / out_filename
             else:
                 out_path = normal_dir / out_filename
-            
+
             # Save as compressed NIfTI
             nib.save(img, out_path)
             file_count[class_name] += 1
-            
+
         except Exception as e:
             print(f"\nError processing {item['subject_id']}: {e}")
             file_count['errors'] += 1
-    
+
     return file_count
 
 
@@ -429,6 +500,7 @@ def main(args):
     print(f"Output directory: {args.output_dir}")
     print(f"Number of folds: {args.n_folds}")
     print(f"Random seed: {args.seed}")
+    print(f"Skull stripping (HD-BET): {'ENABLED (device=' + args.bet_device + ')' if args.skull_strip else 'DISABLED (non-brain tissue present!)'}")
     
     # Find all subjects
     print("\n" + "-" * 70)
@@ -482,15 +554,21 @@ def main(args):
             print(f"{'='*70}")
             
             print(f"  Converting {len(train_data)} training subjects...")
-            train_count = convert_and_copy_subjects(train_data, fold_dir, 'train')
+            train_count = convert_and_copy_subjects(train_data, fold_dir, 'train',
+                                                    skull_strip=args.skull_strip,
+                                                    bet_device=args.bet_device)
             print(f"    Normal: {train_count['normal']}, Alzheimer: {train_count['alzheimer']}, Errors: {train_count['errors']}")
             
             print(f"  Converting {len(val_data)} validation subjects...")
-            val_count = convert_and_copy_subjects(val_data, fold_dir, 'val')
+            val_count = convert_and_copy_subjects(val_data, fold_dir, 'val',
+                                                  skull_strip=args.skull_strip,
+                                                  bet_device=args.bet_device)
             print(f"    Normal: {val_count['normal']}, Alzheimer: {val_count['alzheimer']}, Errors: {val_count['errors']}")
             
             print(f"  Converting {len(test_data)} test subjects...")
-            test_count = convert_and_copy_subjects(test_data, fold_dir, 'test')
+            test_count = convert_and_copy_subjects(test_data, fold_dir, 'test',
+                                                   skull_strip=args.skull_strip,
+                                                   bet_device=args.bet_device)
             print(f"    Normal: {test_count['normal']}, Alzheimer: {test_count['alzheimer']}, Errors: {test_count['errors']}")
         
         # Save split information
@@ -573,6 +651,21 @@ if __name__ == "__main__":
         help='Random seed for reproducibility'
     )
     
+    parser.add_argument(
+        '--skull_strip',
+        action='store_true',
+        default=False,
+        help='Apply HD-BET skull stripping to remove skull/eyes/neck tissue.'
+    )
+
+    parser.add_argument(
+        '--bet_device',
+        type=str,
+        default='cpu',
+        choices=['cpu', 'cuda'],
+        help='Device for HD-BET skull stripping (default: cpu). Use cuda for GPU acceleration.'
+    )
+
     parser.add_argument(
         '--dry_run',
         action='store_true',

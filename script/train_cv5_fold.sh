@@ -161,7 +161,7 @@ echo "======================================================================"
 echo ""
 
 # Run training
-python3 train.py \
+python3 3d/train.py \
     --train_dir "$TRAIN_DIR" \
     --val_dir "$VAL_DIR" \
     --model "$MODEL" \
