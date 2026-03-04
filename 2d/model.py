@@ -280,46 +280,49 @@ class CompactSimpleCNN2DClassifier(nn.Module):
 
 
 class MRIAttentionNet(nn.Module):
-    def __init__(self):
+    def __init__(self, in_channels=1, num_classes=2, num_slices=120, **kwargs):
         super(MRIAttentionNet, self).__init__()
-        
+
+        self.num_slices = num_slices
+        feature_dim = 16
+
         self.shared_cnn = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels, feature_dim, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(2),
-            nn.AdaptiveAvgPool2d(1) # Reduces each slice to a single feature vector
+            nn.AdaptiveAvgPool2d(1)  # Reduces each slice to a single feature vector
         )
-        
-        self.attention = nn.Sequential(
-            nn.Linear(16, 1), # Looks at the features and gives a score
-            nn.Softmax(dim=1) # Makes all 96 scores add up to 100% (1.0)
-        )
-        
-        self.classifier = nn.Linear(16, 2) # e.g., Healthy vs. Disease
 
-    def forward(self, x):
-        # x shape: [Batch, 96, 96, 96] -> (Batch, Slices, H, W)
-        batch_size, num_slices, h, w = x.shape
-        
+        self.attention = nn.Sequential(
+            nn.Linear(feature_dim, 1),  # Looks at the features and gives a score
+            nn.Softmax(dim=1)           # Makes all slice scores add up to 1.0
+        )
+
+        self.classifier = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, x, return_attention=False):
+        # x shape: (Batch, num_slices, C, H, W) — same as other models
+        B, N, C, H, W = x.shape
+
         # Reshape to process all slices through the same CNN at once
-        # New shape: [Batch * 96, 1, 96, 96]
-        x = x.view(batch_size * num_slices, 1, h, w)
-        
+        x = x.view(B * N, C, H, W)  # (B*N, C, H, W)
+
         # Step 1: Feature Extraction (Shared Weights)
-        features = self.shared_cnn(x) # Shape: [Batch*96, 16, 1, 1]
-        features = features.view(batch_size, num_slices, 16)
-        
-        # Step 2: Calculate Attention Scores (Distribution)
-        # This tells you how important each of the 96 slides is
-        attn_weights = self.attention(features) # Shape: [Batch, 96, 1]
-        
-        # Step 3: Weighted Sum (Combine the 96 slices into one)
-        context_vector = torch.sum(attn_weights * features, dim=1) # [Batch, 16]
-        
+        features = self.shared_cnn(x)        # (B*N, 16, 1, 1)
+        features = features.view(B, N, -1)   # (B, N, 16)
+
+        # Step 2: Calculate Attention Scores
+        attn_weights = self.attention(features)  # (B, N, 1)
+
+        # Step 3: Weighted Sum
+        context_vector = torch.sum(attn_weights * features, dim=1)  # (B, 16)
+
         # Step 4: Final Prediction
-        output = self.classifier(context_vector)
-        
-        return output, attn_weights
+        output = self.classifier(context_vector)  # (B, num_classes)
+
+        if return_attention:
+            return output, attn_weights.squeeze(-1)  # (B, N)
+        return output
 
 
 def get_model_2d(model_name='standard', **kwargs):
@@ -337,10 +340,10 @@ def get_model_2d(model_name='standard', **kwargs):
         return SimpleCNN2DAttentionClassifier(**kwargs)
     elif model_name == 'compact':
         return CompactSimpleCNN2DClassifier(**kwargs)
-    elif model_name == "mrinet":
+    elif model_name == 'mrinet':
         return MRIAttentionNet(**kwargs)
     else:
-        raise ValueError(f"Unknown model: {model_name}. Choose from: standard, compact")
+        raise ValueError(f"Unknown model: {model_name}. Choose from: standard, compact, mrinet")
 
 
 if __name__ == "__main__":

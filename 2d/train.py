@@ -2,6 +2,9 @@
 Training script for 2D CNN + Attention Alzheimer's classification
 """
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 import random
 import torch
 import torch.nn as nn
@@ -401,7 +404,7 @@ if __name__ == '__main__':
                        help='Number of slices per volume')
     
     # Model parameters
-    parser.add_argument('--model_name', type=str, default='compact', choices=['standard', 'compact'],
+    parser.add_argument('--model_name', type=str, default='compact', choices=['standard', 'compact', 'mrinet'],
                        help='Model architecture')
     parser.add_argument('--base_channels', type=int, default=24,
                        help='Base channels for CNN backbone (24 for compact, 32 for standard)')
