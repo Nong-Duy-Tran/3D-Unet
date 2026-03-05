@@ -283,7 +283,7 @@ def main(args, fold):
     print("Starting training...")
     print(f"{'='*70}")
     
-    for epoch in range(start_epoch, args.epochs+1):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
         print("-" * 50)
         
@@ -360,7 +360,7 @@ def main(args, fold):
     
     # Save final plots
     print("\nGenerating plots...")
-    plot_training_curves(history['train_loss'], history['val_loss'], history['train_acc'], log_dir / 'training_curves.png')
+    plot_training_curves(history['train_loss'], history['val_loss'], history['train_acc'], history['val_acc'], log_dir / 'training_curves.png')
     plot_confusion_matrix(val_labels, val_preds, ['Normal', 'Alzheimer'], 
                          log_dir / 'confusion_matrix.png')
     plot_roc_curve(val_labels, val_probs, log_dir / 'roc_curve.png')
