@@ -39,7 +39,7 @@ model:
 
 training:
   max_epochs: 256
-  lr: 1.0e-5
+  lr: 5.0e-6
   weight_decay: 0.05
   optimizer:
     name: AdamW
@@ -47,7 +47,7 @@ training:
     label_smoothing: 0.1
   accelerator: gpu
   devices: [3]
-  precision: 16-mixed
+  precision: 32
   accumulate_grad_batches: 4
   freeze_backbone: true
   freeze_backbone_ratio: 1.0
@@ -61,9 +61,9 @@ training:
     eta_min: 1.0e-6
   early_stopping:
     enabled: true
-    monitor: val/auc_epoch
-    mode: max
-    patience: 16
+    monitor: val/loss
+    mode: min
+    patience: 32
     min_delta: 0.0
 
 logging:

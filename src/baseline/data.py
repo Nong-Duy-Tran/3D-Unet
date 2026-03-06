@@ -41,6 +41,7 @@ class MRIClassificationDataset(Dataset):
         rgb_mode=False,
         classes=None,
         class_map=None,
+        subject_ids=None,
     ):
         self.root_dir = root_dir
         self.target_shape = target_shape
@@ -55,6 +56,7 @@ class MRIClassificationDataset(Dataset):
         self.rgb_mode = rgb_mode
         self.classes = classes
         self.class_map = class_map
+        self.subject_ids = set(subject_ids) if subject_ids else None
         
         self.samples = []
         self.labels = []
@@ -78,6 +80,9 @@ class MRIClassificationDataset(Dataset):
             
             for filename in os.listdir(class_dir):
                 if filename.endswith(('.nii', '.nii.gz')):
+                    subject_id = self._subject_id_from_filename(filename)
+                    if self.subject_ids is not None and subject_id not in self.subject_ids:
+                        continue
                     self.samples.append(os.path.join(class_dir, filename))
                     self.labels.append(class_to_idx[class_name])
         
@@ -192,6 +197,15 @@ class MRIClassificationDataset(Dataset):
             return [min(size - 1, max(0, i)) for i in indices]
         # uniform
         return [int(round(i)) for i in np.linspace(0, size - 1, self.num_slices)]
+
+    @staticmethod
+    def _subject_id_from_filename(filename: str) -> str:
+        name = filename
+        if name.endswith(".nii.gz"):
+            return name[:-7]
+        if name.endswith(".nii"):
+            return name[:-4]
+        return Path(name).stem
 
     def _extract_slices(self, img):
         axis = int(self.slice_axis)
@@ -483,6 +497,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             rgb_mode=rgb_mode,
             classes=classes,
             class_map=class_map,
+            subject_ids=train_subject_ids,
         )
         val_dataset = MRIClassificationDataset(
             val_dir,
@@ -498,6 +513,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             rgb_mode=rgb_mode,
             classes=classes,
             class_map=class_map,
+            subject_ids=val_subject_ids,
         )
     
     sampler = None

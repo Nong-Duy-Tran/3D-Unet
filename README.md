@@ -32,11 +32,16 @@ python scripts/nifti_to_jpg.py --output-dir data/ADNI/jpg
 ```
 
 
-## Training (2D JPG + DeiT)
+## Training (Hydra + Lightning)
 
-Lightning + Hydra + W&B:
+Single run:
 ```bash
-python scripts/train_2d.py --config-name train_2d_jpg
+python -m src.baseline.train --config-name train_2d_oasis
+```
+
+5-fold run:
+```bash
+python scripts/train_kfold.py --config-name train_2d_oasis --folds 5
 ```
 
 ## Evaluation
