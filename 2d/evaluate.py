@@ -112,7 +112,7 @@ def main(args):
     val_loader = get_dataloader(
         data_dir=args.data_dir,
         fold=args.fold,
-        split='val',
+        split='test',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )

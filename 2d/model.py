@@ -114,11 +114,8 @@ class SimpleWeightedAttention(nn.Module):
     def __init__(self, num_slices, feature_dim):
         super(SimpleWeightedAttention, self).__init__()
         
-        # Learnable weight for each slice
         self.slice_weights = nn.Parameter(torch.ones(num_slices, 1))
         
-        # Optional: Add a small network to compute weights from features
-        # This allows content-based weighting (not just position-based)
         self.weight_network = nn.Sequential(
             nn.Linear(feature_dim, feature_dim // 4),
             nn.ReLU(inplace=True),
@@ -138,17 +135,12 @@ class SimpleWeightedAttention(nn.Module):
         B, N, D = x.shape
         
         if use_content_based:
-            # Compute attention weights from features (content-based)
-            # Each slice gets a weight based on its content
             slice_scores = self.weight_network(x)  # (B, N, 1)
             attention_weights = F.softmax(slice_scores, dim=1)  # (B, N, 1)
         else:
-            # Use fixed learned weights (position-based)
-            # Same weights for all samples in batch
             attention_weights = F.softmax(self.slice_weights, dim=0)  # (N, 1)
             attention_weights = attention_weights.unsqueeze(0).expand(B, -1, -1)  # (B, N, 1)
         
-        # Weighted sum: multiply each slice by its weight and sum
         aggregated = (x * attention_weights).sum(dim=1)  # (B, D)
         
         return aggregated, attention_weights.squeeze(-1)
@@ -184,13 +176,10 @@ class SimpleCNN2DAttentionClassifier(nn.Module):
         self.num_slices = num_slices
         self.use_content_based = use_content_based
         
-        # CNN backbone for slice feature extraction
         self.backbone = CNN2DBackbone(in_channels=in_channels, base_channels=base_channels)
         
-        # Simple weighted attention
         self.attention = SimpleWeightedAttention(num_slices, self.backbone.feature_dim)
         
-        # Classification head
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(self.backbone.feature_dim, self.backbone.feature_dim // 2),
