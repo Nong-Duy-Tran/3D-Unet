@@ -14,6 +14,44 @@ from src.baseline.models import get_model
 from src.baseline.utils import find_repo_root
 
 
+class FocalLoss(torch.nn.Module):
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        weight: "torch.Tensor | None" = None,
+        reduction: str = "mean",
+        label_smoothing: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if gamma < 0:
+            raise ValueError("FocalLoss gamma must be >= 0.")
+        if reduction not in {"none", "mean", "sum"}:
+            raise ValueError("FocalLoss reduction must be one of: none, mean, sum.")
+        self.gamma = float(gamma)
+        self.reduction = reduction
+        self.label_smoothing = float(label_smoothing)
+        if weight is not None:
+            self.register_buffer("weight", weight.detach().clone())
+        else:
+            self.weight = None
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = torch.nn.functional.cross_entropy(
+            logits,
+            targets,
+            weight=self.weight,
+            reduction="none",
+            label_smoothing=self.label_smoothing,
+        )
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1.0 - pt) ** self.gamma) * ce_loss
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        if self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
+
+
 def _resolve_paths(cfg: DictConfig) -> tuple[Path, Path, Path, Path]:
     orig_cwd = Path(get_original_cwd())
     repo_root = find_repo_root(orig_cwd)
@@ -105,10 +143,27 @@ def _make_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 if self._freeze_backbone_all:
                     encoder.eval()
             loss_cfg = getattr(cfg_in.training, "loss", None)
+            loss_name = "cross_entropy"
             label_smoothing = 0.0
-            if loss_cfg and getattr(loss_cfg, "label_smoothing", None) is not None:
-                label_smoothing = float(loss_cfg.label_smoothing)
-            self.loss_fn = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+            focal_gamma = 2.0
+            if loss_cfg:
+                if getattr(loss_cfg, "name", None) is not None:
+                    loss_name = str(loss_cfg.name).strip().lower()
+                if getattr(loss_cfg, "label_smoothing", None) is not None:
+                    label_smoothing = float(loss_cfg.label_smoothing)
+                if getattr(loss_cfg, "gamma", None) is not None:
+                    focal_gamma = float(loss_cfg.gamma)
+
+            if loss_name in {"cross_entropy", "ce"}:
+                self.loss_fn = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+            elif loss_name in {"focal", "focalloss", "focal_loss"}:
+                self.loss_fn = FocalLoss(
+                    gamma=focal_gamma,
+                    weight=class_weights,
+                    label_smoothing=label_smoothing,
+                )
+            else:
+                raise ValueError(f"Unsupported training.loss.name: {loss_name}")
             self._val_preds: list[torch.Tensor] = []
             self._val_targets: list[torch.Tensor] = []
             self._val_probs: list[torch.Tensor] = []

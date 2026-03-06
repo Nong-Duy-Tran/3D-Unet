@@ -3,35 +3,39 @@ seed: 42
 data:
   format: jpg
   root_dir: data/OASIS/jpg_all
+  # Single-folder layout: all data live under one root.
   train_dir: data/OASIS/jpg_all/all
   val_dir: data/OASIS/jpg_all/all
   classes: [normal, alzheimer]
+  # Split ratios used when preprocessing (subject-level).
   train_ratio: 0.8
   val_ratio: 0.1
   test_ratio: 0.1
+  # K-fold split file (subject-level). Set fold_index per run.
   split_file: data/OASIS/jpg_all/split_info/folds.json
   fold_index: 0
   image_size: 224
   batch_size: 4
   num_workers: 8
+  randaugment_ops: 2
+  randaugment_mag: 9
   num_slices: 120
   slice_strategy_train: uniform
   slice_strategy_val: uniform
 
 model:
-  name: deit2d
-  timm_name: deit_base_patch16_224.fb_in1k
+  name: vgg16
   pretrained: true
   num_classes: 2
   in_channels: 1
   image_size: 224
   drop_path_rate: 0.1
   attn_drop_rate: 0.0
-  dropout: 0.2
-  slice_attn_hidden_dim: null
-  slice_attn_dropout: 0.0
-  slice_attn_activation: tanh
-  slice_attn_use_layernorm: false
+  # simpleunet2d only (kept for override runs)
+  base_features: 64
+  head_hidden: 256
+  dropout: 0.3
+  head_dropout: 0.2
 
 training:
   max_epochs: 256
@@ -40,7 +44,9 @@ training:
   optimizer:
     name: AdamW
   loss:
-    label_smoothing: 0.1
+    name: focal
+    gamma: 2.0
+    label_smoothing: 0.0
   accelerator: gpu
   devices: [3]
   precision: 32
@@ -52,7 +58,7 @@ training:
   lr_scheduler:
     enabled: true
     name: CosineWarmup
-    warmup_epochs: 5
+    warmup_epochs: 3
     warmup_start_factor: 0.1
     eta_min: 1.0e-6
   early_stopping:
@@ -67,11 +73,11 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    tags: [deit_base_patch16_224, jpg, oasis, stratified_5folds, nonblank, uniform]
+    tags: [vgg_base_attn_120sl, focal_loss, jpg, oasis, stratified_5folds, nonblank, uniform]
 
 checkpoint:
-  dir: checkpoints/deit_120sl_oasis_5folds
+  dir: checkpoints/vgg_base_attn_120sl_oasis_5folds_focal
   monitor: val/auc_epoch
   mode: max
 
-output_dir: outputs/train_2d_jpg_oasis_deit
+output_dir: outputs/train_2d_jpg_oasis_focal
