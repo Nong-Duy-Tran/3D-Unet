@@ -1,0 +1,21 @@
+format: jpg
+root_dir: data/OASIS/jpg_all
+train_dir: data/OASIS/jpg_all/all
+val_dir: data/OASIS/jpg_all/all
+classes: [normal, alzheimer]
+train_ratio: 0.8
+val_ratio: 0.1
+test_ratio: 0.1
+split_file: data/OASIS/jpg_all/split_info/folds.json
+fold_index: 0
+image_size: 224
+batch_size: 4
+num_workers: 8
+randaugment_ops: 2
+randaugment_mag: 9
+num_slices: 120
+slice_strategy_train: uniform
+slice_strategy_val: uniform
+rgb_mode: false
+normalize: true
+

@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - /data: oasis_jpg
+  - /model: vgg16_bn
+  - /loss: cross_entropy
+  - /trainer: gpu
+  - /logging: wandb
+  - /paths: default
+
+seed: 42
+
+checkpoint:
+  dir: checkpoints/vgg_base_attn_120sl_oasis_5folds
+  monitor: val/auc_epoch
+  mode: max
+
+output_dir: outputs/train_2d_oasis
+
+logging:
+  wandb:
+    tags: [vgg_base_attn_120sl, jpg, oasis, stratified_5folds, nonblank, uniform]

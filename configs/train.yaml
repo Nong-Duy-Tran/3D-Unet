@@ -1,0 +1,8 @@
+defaults:
+  - experiment: oasis_vgg
+  - _self_
+
+hydra:
+  run:
+    dir: ${output_dir}/hydra
+

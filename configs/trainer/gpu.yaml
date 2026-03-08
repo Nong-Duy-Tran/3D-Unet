@@ -1,0 +1,26 @@
+# @package training
+max_epochs: 256
+lr: 5.0e-6
+weight_decay: 0.05
+optimizer:
+  name: AdamW
+accelerator: gpu
+devices: [3]
+precision: 32
+accumulate_grad_batches: 4
+freeze_backbone: true
+freeze_backbone_ratio: 1.0
+class_weights:
+  enabled: true
+lr_scheduler:
+  enabled: true
+  name: CosineWarmup
+  warmup_epochs: 3
+  warmup_start_factor: 0.1
+  eta_min: 1.0e-6
+early_stopping:
+  enabled: true
+  monitor: val/loss
+  mode: min
+  patience: 32
+  min_delta: 0.0

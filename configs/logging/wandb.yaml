@@ -1,0 +1,6 @@
+wandb:
+  enabled: true
+  project: alzheimer-baseline
+  name: null
+  tags: []
+

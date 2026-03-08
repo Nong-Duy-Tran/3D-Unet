@@ -1,0 +1,14 @@
+name: deit2d
+timm_name: deit_base_patch16_224
+pretrained: true
+num_classes: 2
+in_channels: 1
+image_size: 224
+drop_path_rate: 0.1
+attn_drop_rate: 0.0
+dropout: 0.2
+slice_attn_hidden_dim: null
+slice_attn_dropout: 0.0
+slice_attn_activation: tanh
+slice_attn_use_layernorm: false
+

@@ -36,12 +36,17 @@ python scripts/nifti_to_jpg.py --output-dir data/ADNI/jpg
 
 Single run:
 ```bash
-python -m src.baseline.train --config-name train_2d_oasis
+python -m src.project.cli.train
+```
+
+Select a grouped experiment:
+```bash
+python -m src.project.cli.train experiment=oasis_deit
 ```
 
 5-fold run:
 ```bash
-python scripts/train_kfold.py --config-name train_2d_oasis --folds 5
+python scripts/train_kfold.py --config-name oasis_vgg --folds 5
 ```
 
 ## Evaluation

@@ -12,4 +12,4 @@ import runpy  # noqa: E402
 
 
 if __name__ == "__main__":
-    runpy.run_module("src.baseline.train", run_name="__main__")
+    runpy.run_module("src.project.cli.train", run_name="__main__")

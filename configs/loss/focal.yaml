@@ -1,0 +1,4 @@
+# @package training.loss
+name: focal
+gamma: 2.0
+label_smoothing: 0.1

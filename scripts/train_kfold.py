@@ -9,11 +9,16 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 
-def _load_config(repo_root: Path, config_name: str):
-    cfg_path = repo_root / "configs" / "baseline" / f"{config_name}.yaml"
-    if not cfg_path.exists():
-        raise FileNotFoundError(f"Config not found: {cfg_path}")
-    return OmegaConf.load(cfg_path)
+def _resolve_config(repo_root: Path, config_name: str) -> tuple[str, Path]:
+    experiment_cfg = repo_root / "configs" / "experiment" / f"{config_name}.yaml"
+    if experiment_cfg.exists():
+        return "experiment", experiment_cfg
+
+    baseline_cfg = repo_root / "configs" / "baseline" / f"{config_name}.yaml"
+    if baseline_cfg.exists():
+        return "baseline", baseline_cfg
+
+    raise FileNotFoundError(f"Config not found under configs/experiment or configs/baseline: {config_name}")
 
 
 def main() -> int:
@@ -38,11 +43,12 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
-    cfg = _load_config(repo_root, args.config_name)
+    config_kind, cfg_path = _resolve_config(repo_root, args.config_name)
+    cfg = OmegaConf.load(cfg_path)
 
     base_ckpt = getattr(getattr(cfg, "checkpoint", None), "dir", None) or "checkpoints/kfold"
     base_out = getattr(cfg, "output_dir", None) or f"outputs/{args.config_name}"
-    base_hydra = f"outputs/{args.config_name}/hydra"
+    base_hydra = f"{base_out}/hydra"
 
     end_fold = args.end_fold if args.end_fold is not None else args.folds
 
@@ -61,7 +67,10 @@ def main() -> int:
             overrides.append(f"logging.wandb.name={args.wandb_prefix}_fold_{fold}")
         overrides.extend(args.override)
 
-        cmd = [sys.executable, "-m", "src.baseline.train", "--config-name", args.config_name, *overrides]
+        if config_kind == "experiment":
+            cmd = [sys.executable, "-m", "src.project.cli.train", f"experiment={args.config_name}", *overrides]
+        else:
+            cmd = [sys.executable, "-m", "src.baseline.train", "--config-name", args.config_name, *overrides]
         print("Running:", " ".join(cmd))
         if not args.dry_run:
             env = os.environ.copy()

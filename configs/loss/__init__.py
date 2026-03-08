@@ -1,0 +1,2 @@
+"""Loss config group."""
+

@@ -1,0 +1,21 @@
+# @package _global_
+defaults:
+  - /data: oasis_jpg
+  - /model: deit2d
+  - /loss: cross_entropy
+  - /trainer: gpu
+  - /logging: wandb
+  - /paths: default
+
+seed: 42
+
+checkpoint:
+  dir: checkpoints/deit_120sl_oasis_5folds
+  monitor: val/auc_epoch
+  mode: max
+
+output_dir: outputs/train_2d_oasis_deit
+
+logging:
+  wandb:
+    tags: [deit_base_patch16_224, jpg, oasis, stratified_5folds, nonblank, uniform]
