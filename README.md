@@ -23,12 +23,12 @@ pip install torch torchvision
 pip install -r requirements.txt
 ```
 
-## Data Preparation (2D JPG pipeline)
+## Data Preparation (OASIS 3D standard flow)
 
-Generate 2D JPG slices from NIfTI volumes (ADNI abb/bbc/ecc):
+Process raw OASIS discs into 3D NIfTI with the group's standard pipeline:
 
 ```bash
-python scripts/nifti_to_jpg.py --output-dir data/ADNI/jpg
+python src/data/preprocess_oasis_data.py --oasis_dir data/OASIS --output_dir data/processed_oasis_3d_cv5 --n_folds 5 --val_ratio 0.15 --seed 42 --skull_strip --hdbet_device cuda
 ```
 
 
