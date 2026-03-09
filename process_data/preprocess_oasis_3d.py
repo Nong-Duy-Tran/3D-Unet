@@ -4,7 +4,8 @@
 
 Two-stage design:
   Stage 1 - Cache: preprocess every subject exactly once.
-    load .img → skull-strip (HD-BET) → reorient RAS+ → resample 1 mm iso → crop non-blank → .nii.gz
+    load .img → skull-strip (HD-BET) → reorient RAS+ → resample 1 mm iso →
+    crop non-blank → team orientation remap → .nii.gz
   Stage 2 - Assemble: populate fold dirs from cache via symlinks (no recomputation).
 
 Split strategy: true nested CV via outer StratifiedKFold (each subject in test exactly once).
@@ -24,6 +25,12 @@ import numpy as np
 import pandas as pd
 import nibabel as nib
 from nibabel.processing import resample_to_output
+from nibabel.orientations import (
+    apply_orientation,
+    inv_ornt_aff,
+    io_orientation,
+    ornt_transform,
+)
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from tqdm import tqdm
 
@@ -377,11 +384,34 @@ def crop_nonblank_3d(
     return nib.Nifti1Image(cropped, new_affine, img.header)
 
 
+def reorient_to_team_convention(img: nib.Nifti1Image) -> nib.Nifti1Image:
+    """
+    Reorient volume to the team's view convention used in downstream inspection:
+      - axis 0: coronal index
+      - axis 1: axial index
+      - axis 2: sagital index
+    """
+    data = img.get_fdata(dtype=np.float32)
+    src_ornt = io_orientation(img.affine)
+
+    dst_ornt = np.array([[0.0, -1.0], [1.0, 1.0], [2.0, -1.0]], dtype=np.float64)
+    transform = ornt_transform(src_ornt, dst_ornt)
+
+    data_out = apply_orientation(data, transform)
+    aff_out = img.affine @ inv_ornt_aff(transform, img.shape)
+
+    out = nib.Nifti1Image(data_out, aff_out)
+    out.set_qform(aff_out, code=1)
+    out.set_sform(aff_out, code=1)
+    return out
+
+
 def preprocess_volume(
     img_path: Path,
     subject_id: str,
     apply_skull_strip: bool = True,
     hdbet_device: str = "cpu",
+    apply_team_orientation: bool = True,
 ) -> nib.Nifti1Image:
     """
     Full 3D preprocessing pipeline for a single volume:
@@ -390,6 +420,7 @@ def preprocess_volume(
       3. Reorient to RAS+ canonical
       4. Resample to isotropic 1 mm
       5. Crop to non-blank 3D bounding box
+      6. Reorient to team convention for downstream view consistency
 
     Returns a preprocessed nibabel image ready to save as .nii.gz.
     """
@@ -413,6 +444,10 @@ def preprocess_volume(
     # 5. Crop non-blank 3D
     img = crop_nonblank_3d(img)
 
+    # 6. Reorient to team convention (enabled by default)
+    if apply_team_orientation:
+        img = reorient_to_team_convention(img)
+
     return img
 
 
@@ -425,6 +460,7 @@ def preprocess_all_to_cache(
     cache_dir: Path,
     apply_skull_strip: bool,
     hdbet_device: str,
+    apply_team_orientation: bool,
 ) -> dict[str, Path]:
     """
     Preprocess every subject exactly once and save to *cache_dir*.
@@ -454,6 +490,7 @@ def preprocess_all_to_cache(
                 sid,
                 apply_skull_strip=apply_skull_strip,
                 hdbet_device=hdbet_device,
+                apply_team_orientation=apply_team_orientation,
             )
             nib.save(processed, str(out_path))
             cached[sid] = out_path
@@ -614,6 +651,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"Val ratio        : {args.val_ratio}")
     print(f"Outer seed       : {args.seed}")
     print(f"Skull stripping  : {'ENABLED (device=' + args.hdbet_device + ')' if args.skull_strip else 'DISABLED'}")
+    print(f"Team orientation : {'ENABLED' if args.team_orientation else 'DISABLED'}")
 
     # Resolve per-fold val seeds
     if args.fold_val_seeds:
@@ -680,6 +718,7 @@ def main(args: argparse.Namespace) -> None:
         cache_dir=cache_dir,
         apply_skull_strip=args.skull_strip,
         hdbet_device=args.hdbet_device,
+        apply_team_orientation=args.team_orientation,
     )
 
     assemble_splits_from_cache(
@@ -771,6 +810,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hdbet_device", type=str, default="cpu", choices=["cpu", "cuda"],
         help="Device for HD-BET",
+    )
+    parser.add_argument(
+        "--team_orientation", dest="team_orientation", action="store_true",
+        help="Apply team orientation remap to avoid downstream axis/angle mismatch",
+        default=False
     )
     parser.add_argument(
         "--dry_run", action="store_true",
