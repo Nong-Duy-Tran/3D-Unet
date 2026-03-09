@@ -415,16 +415,14 @@ def preprocess_volume(
     subject_id: str,
     apply_skull_strip: bool = True,
     hdbet_device: str = "cpu",
-    apply_team_orientation: bool = True,
 ) -> nib.Nifti1Image:
     """
     Full 3D preprocessing pipeline for a single volume:
       1. Load Analyze (.img) file
-      2. Skull stripping via HD-BET (if enabled)
-      3. Reorient to RAS+ canonical
+      2. Reorient to RAS+ canonical (first normalization step)
+      3. Skull stripping via HD-BET (if enabled)
       4. Resample to isotropic 1 mm
       5. Crop to non-blank 3D bounding box
-      6. Reorient to team convention for downstream view consistency
 
     Returns a preprocessed nibabel image ready to save as .nii.gz.
     """
@@ -435,22 +433,18 @@ def preprocess_volume(
     if img.ndim == 4:
         img = nib.Nifti1Image(img.get_fdata()[..., 0], img.affine, img.header)
 
-    # 2. Skull stripping
+    # 2. Reorient to RAS+ first (unifies axis order across datasets)
+    img = reorient_to_ras(img)
+
+    # 3. Skull stripping
     if apply_skull_strip:
         img = skull_strip(img, subject_id, device=hdbet_device)
-
-    # 3. Reorient to RAS+
-    img = reorient_to_ras(img)
 
     # 4. Resample to 1 mm isotropic
     img = resample_isotropic(img, voxel_mm=1.0)
 
     # 5. Crop non-blank 3D
     img = crop_nonblank_3d(img)
-
-    # 6. Reorient to team convention (enabled by default)
-    if apply_team_orientation:
-        img = reorient_to_team_convention(img)
 
     return img
 
@@ -464,7 +458,6 @@ def preprocess_all_to_cache(
     cache_dir: Path,
     apply_skull_strip: bool,
     hdbet_device: str,
-    apply_team_orientation: bool,
 ) -> dict[str, Path]:
     """
     Preprocess every subject exactly once and save to *cache_dir*.
@@ -494,7 +487,6 @@ def preprocess_all_to_cache(
                 sid,
                 apply_skull_strip=apply_skull_strip,
                 hdbet_device=hdbet_device,
-                apply_team_orientation=apply_team_orientation,
             )
             nib.save(processed, str(out_path))
             cached[sid] = out_path
@@ -655,7 +647,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"Val ratio        : {args.val_ratio}")
     print(f"Outer seed       : {args.seed}")
     print(f"Skull stripping  : {'ENABLED (device=' + args.hdbet_device + ')' if args.skull_strip else 'DISABLED'}")
-    print(f"Team orientation : {'ENABLED' if args.team_orientation else 'DISABLED'}")
+    print("Output orientation: RAS canonical")
 
     # Resolve per-fold val seeds
     if args.fold_val_seeds:
@@ -722,7 +714,6 @@ def main(args: argparse.Namespace) -> None:
         cache_dir=cache_dir,
         apply_skull_strip=args.skull_strip,
         hdbet_device=args.hdbet_device,
-        apply_team_orientation=args.team_orientation,
     )
 
     assemble_splits_from_cache(
@@ -815,15 +806,6 @@ if __name__ == "__main__":
         "--hdbet_device", type=str, default="cpu", choices=["cpu", "cuda"],
         help="Device for HD-BET",
     )
-    parser.add_argument(
-        "--team_orientation", dest="team_orientation", action="store_true",
-        help="Apply team orientation remap to avoid downstream axis/angle mismatch",
-    )
-    parser.add_argument(
-        "--no_team_orientation", dest="team_orientation", action="store_false",
-        help="Disable team orientation remap and keep pure RAS output",
-    )
-    parser.set_defaults(team_orientation=True)
     parser.add_argument(
         "--dry_run", action="store_true",
         help="Create split metadata only; skip file conversion",
