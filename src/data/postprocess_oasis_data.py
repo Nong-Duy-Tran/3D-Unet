@@ -5,12 +5,12 @@ Input layout (from preprocess_oasis_data.py):
   <input_dir>/fold_<k>/{train,val,test}/{normal,alzheimer}/*.nii.gz
 
 Output layout:
-  <output_dir>/fold_<k>/{train,val,test}/{normal,alzheimer}/*_axis{0,1,2}_<idx>.jpg
+  <output_dir>/{coronal,axial,sagittal}/fold_<k>/{train,val,test}/{normal,alzheimer}/*.jpg
 
 Display convention baked into exported slices:
-  - axis 0: rot180
-  - axis 1: unchanged
-  - axis 2: rot90 counter-clockwise
+  - coronal (axis 0): rot180
+  - axial (axis 1): unchanged
+  - sagittal (axis 2): rot90 counter-clockwise
 """
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ import nibabel as nib
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
+
+AXIS_NAMES: dict[int, str] = {
+    0: "coronal",
+    1: "axial",
+    2: "sagittal",
+}
 
 
 def _subject_id_from_filename(filename: str) -> str:
@@ -117,7 +123,7 @@ def main() -> None:
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data/processed_oasis_slices_224",
+        default="data/processed_oasis_2d_cv5",
         help="Directory to write oriented, padded JPG slices.",
     )
     parser.add_argument(
@@ -197,18 +203,19 @@ def main() -> None:
             volume = volume[..., 0]
 
         subject_id = _subject_id_from_filename(nii_path.name)
-        out_class_dir = output_dir / fold_name / split_name / class_name
-        out_class_dir.mkdir(parents=True, exist_ok=True)
 
         for axis in (0, 1, 2):
+            axis_name = AXIS_NAMES[axis]
             axis_len = int(volume.shape[axis])
             start = int(axis_len * args.slice_ratio_start)
             end = int(axis_len * args.slice_ratio_end)
             start = max(0, min(start, axis_len))
             end = max(start + 1, min(end, axis_len))
+            out_class_dir = output_dir / axis_name / fold_name / split_name / class_name
+            out_class_dir.mkdir(parents=True, exist_ok=True)
 
             for idx in range(start, end, args.slice_step):
-                out_path = out_class_dir / f"{subject_id}_axis{axis}_{idx:03d}.jpg"
+                out_path = out_class_dir / f"{subject_id}_{axis_name}_{idx:03d}.jpg"
                 if out_path.exists() and not args.overwrite:
                     skipped += 1
                     continue

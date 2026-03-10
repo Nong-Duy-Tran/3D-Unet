@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -27,8 +27,9 @@ from tqdm.auto import tqdm
 import lightning.pytorch as pl
 import timm
 
-from src.baseline.models.deit2d_classifier import DeiT2DClassifier, SliceAttentionPool
-from src.baseline.models.simple_unet2d_classifier import SimpleUNet2DClassifier
+from src.baseline.models.models_2d.deit_classifier import DeiT2DClassifier
+from src.baseline.models.models_2d.simple_unet_classifier import SimpleUNet2DClassifier
+from src.baseline.models.slice_attention import SliceAttentionPool
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -319,7 +320,7 @@ def save_plots(output_dir, history: MetricsHistory, labels, preds, probs, class_
         plt.close()
 
 
-@hydra.main(config_path="../configs/baseline", config_name="train_2d_oasis", version_base=None)
+@hydra.main(config_path="../../configs/baseline", config_name="train_2d_oasis", version_base=None)
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
     from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint

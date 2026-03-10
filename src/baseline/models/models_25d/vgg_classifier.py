@@ -3,18 +3,18 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .slice_attention import SliceAttentionPool
+from ..slice_attention import SliceAttentionPool
 
 
-class VGG2DClassifier(nn.Module):
-    """VGG encoder + slice attention pooling for volume classification."""
+class VGG25DClassifier(nn.Module):
+    """VGG encoder + slice attention pooling for 2.5D volume classification."""
 
     def __init__(
         self,
         vgg_name: str = "vgg16_bn",
-        pretrained: bool = True,
+        pretrained: bool = False,
         image_size: int = 224,
-        in_channels: int = 1,
+        in_channels: int = 5,
         num_classes: int = 2,
         dropout: float = 0.1,
         slice_attn_hidden_dim: int | None = None,
@@ -47,12 +47,17 @@ class VGG2DClassifier(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(embed_dim, num_classes)
 
+        if not pretrained:
+            self._init_weights(self.encoder)
+        self._init_weights(self.pool)
+        self._init_weights(self.classifier)
+
     @staticmethod
     def _build_backbone(vgg_name: str, pretrained: bool):
         try:
             import torchvision.models as tv_models
         except Exception as exc:  # pragma: no cover
-            raise ImportError("torchvision is required for VGG2D. Install torchvision, then run again.") from exc
+            raise ImportError("torchvision is required for VGG25D. Install torchvision, then run again.") from exc
 
         spec = {
             "vgg11": ("vgg11", "VGG11_Weights"),
@@ -103,31 +108,41 @@ class VGG2DClassifier(nn.Module):
             bias=first_conv.bias is not None,
             padding_mode=first_conv.padding_mode,
         )
-        with torch.no_grad():
-            if in_channels == 1:
-                new_conv.weight.copy_(first_conv.weight.mean(dim=1, keepdim=True))
-            elif in_channels == 2:
-                new_conv.weight[:, :2].copy_(first_conv.weight[:, :2])
-            elif in_channels == 3:
-                new_conv.weight.copy_(first_conv.weight)
-            else:
-                new_conv.weight[:, :3].copy_(first_conv.weight)
-                mean_weight = first_conv.weight.mean(dim=1, keepdim=True)
-                for c in range(3, in_channels):
-                    new_conv.weight[:, c : c + 1].copy_(mean_weight)
-
-            if first_conv.bias is not None:
-                new_conv.bias.copy_(first_conv.bias)
-
         backbone.features[0] = new_conv
+
+    @classmethod
+    def _init_weights(cls, module: nn.Module) -> None:
+        for submodule in module.modules():
+            cls._init_module(submodule)
+
+    @staticmethod
+    def _init_module(module: nn.Module) -> None:
+        if isinstance(module, nn.Conv2d):
+            nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+            return
+        if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d, nn.LayerNorm)):
+            if getattr(module, "weight", None) is not None:
+                nn.init.ones_(module.weight)
+            if getattr(module, "bias", None) is not None:
+                nn.init.zeros_(module.bias)
+            return
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 4:
             x = x.unsqueeze(1)
-        b, s, c, h, w = x.shape
-        x = x.view(b * s, c, h, w)
-        feats = self.encoder(x)  # (B*S, 4096)
-        feats = feats.view(b, s, -1)
+        if x.dim() != 5:
+            raise ValueError(f"Expected 5D input (B, N, C, H, W), got shape={tuple(x.shape)}")
+
+        b, n, c, h, w = x.shape
+        x = x.view(b * n, c, h, w)
+        feats = self.encoder(x)
+        feats = feats.view(b, n, -1)
         pooled = self.pool(feats)
         pooled = self.dropout(pooled)
         return self.classifier(pooled)
@@ -136,9 +151,9 @@ class VGG2DClassifier(nn.Module):
 def default_config():
     return {
         "vgg_name": "vgg16_bn",
-        "pretrained": True,
+        "pretrained": False,
         "image_size": 224,
-        "in_channels": 1,
+        "in_channels": 5,
         "num_classes": 2,
         "dropout": 0.1,
         "slice_attn_hidden_dim": None,
@@ -146,4 +161,3 @@ def default_config():
         "slice_attn_activation": "tanh",
         "slice_attn_use_layernorm": False,
     }
-

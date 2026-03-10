@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .slice_attention import SliceAttentionPool
+from ..slice_attention import SliceAttentionPool
 
 
 class DeiT2DClassifier(nn.Module):

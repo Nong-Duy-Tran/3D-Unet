@@ -39,9 +39,10 @@ def build_dataloaders(
         data_format=getattr(cfg.data, "format", "nifti"),
         classes=getattr(cfg.data, "classes", None),
         class_map=getattr(cfg.data, "class_map", None),
-        jpg_view=getattr(cfg.data, "jpg_view", "ax"),
+        jpg_view=getattr(cfg.data, "jpg_view", "axial"),
+        jpg_mode=getattr(cfg.data, "jpg_mode", "stack"),
+        window_size=getattr(cfg.data, "window_size", 5),
         image_size=getattr(cfg.data, "image_size", None),
         train_subject_ids=train_subject_ids,
         val_subject_ids=val_subject_ids,
     )
-

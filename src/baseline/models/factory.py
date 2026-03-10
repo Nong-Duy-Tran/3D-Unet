@@ -1,11 +1,29 @@
-from .simple_unet3d_classifier import SimpleUNet3DClassifier, default_config as simple_default_config
-from .unet3d_classifier import UNet3DClassifier, default_config as unet_default_config
-from .vit2d_classifier import ViT2DClassifier, default_config as vit2d_default_config
-from .swin2d_classifier import Swin2DClassifier, default_config as swin2d_default_config
-from .swin3d_classifier import Swin3DClassifier, default_config as swin3d_default_config
-from .deit2d_classifier import DeiT2DClassifier, default_config as deit2d_default_config
-from .vgg2d_classifier import VGG2DClassifier, default_config as vgg2d_default_config
-from .simple_unet2d_classifier import SimpleUNet2DClassifier, default_config as simpleunet2d_default_config
+from .models_3d import (
+    SimpleUNet3DClassifier,
+    simple_default_config,
+    Swin3DClassifier,
+    swin3d_default_config,
+    UNet3DClassifier,
+    unet_default_config,
+)
+from .models_2d import (
+    DeiT2DClassifier,
+    deit2d_default_config,
+    SimpleUNet2DClassifier,
+    simpleunet2d_default_config,
+    Swin2DClassifier,
+    swin2d_default_config,
+    VGG2DClassifier,
+    vgg2d_default_config,
+    ViT2DClassifier,
+    vit2d_default_config,
+)
+from .models_25d import (
+    Timm25DClassifier,
+    timm25d_default_config,
+    VGG25DClassifier,
+    vgg25d_default_config,
+)
 
 _VGG_MODEL_NAMES = {"vgg2d", "vgg11", "vgg11_bn", "vgg13", "vgg13_bn", "vgg16", "vgg16_bn", "vgg19", "vgg19_bn"}
 
@@ -25,6 +43,10 @@ def get_model(model_name="simple", **kwargs):
         return Swin3DClassifier(**kwargs)
     if model_name == "deit2d":
         return DeiT2DClassifier(**kwargs)
+    if model_name == "timm25d":
+        return Timm25DClassifier(**kwargs)
+    if model_name == "vgg25d":
+        return VGG25DClassifier(**kwargs)
     if model_name in _VGG_MODEL_NAMES:
         if model_name != "vgg2d":
             kwargs.setdefault("vgg_name", model_name)
@@ -49,6 +71,10 @@ def get_model_config(model_name: str):
         return swin3d_default_config()
     if model_name == "deit2d":
         return deit2d_default_config()
+    if model_name == "timm25d":
+        return timm25d_default_config()
+    if model_name == "vgg25d":
+        return vgg25d_default_config()
     if model_name in _VGG_MODEL_NAMES:
         cfg = vgg2d_default_config()
         if model_name != "vgg2d":

@@ -1,12 +1,7 @@
 from .factory import get_model, get_model_config
-from .simple_unet3d_classifier import SimpleUNet3DClassifier
-from .unet3d_classifier import UNet3DClassifier
-from .vit2d_classifier import ViT2DClassifier
-from .swin2d_classifier import Swin2DClassifier
-from .swin3d_classifier import Swin3DClassifier
-from .deit2d_classifier import DeiT2DClassifier
-from .vgg2d_classifier import VGG2DClassifier
-from .simple_unet2d_classifier import SimpleUNet2DClassifier
+from .models_3d import SimpleUNet3DClassifier, Swin3DClassifier, UNet3DClassifier
+from .models_2d import DeiT2DClassifier, SimpleUNet2DClassifier, Swin2DClassifier, VGG2DClassifier, ViT2DClassifier
+from .models_25d import Timm25DClassifier, VGG25DClassifier
 
 __all__ = [
     "get_model",
@@ -19,4 +14,6 @@ __all__ = [
     "DeiT2DClassifier",
     "VGG2DClassifier",
     "SimpleUNet2DClassifier",
+    "Timm25DClassifier",
+    "VGG25DClassifier",
 ]

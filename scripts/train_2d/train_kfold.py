@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -15,7 +15,7 @@ def main() -> int:
     parser = add_kfold_args(
         argparse.ArgumentParser(),
         default_config_name="train_2d_oasis",
-        description="Run k-fold training sequentially.",
+        description="Run 2D k-fold training sequentially.",
     )
     args = parser.parse_args()
     return run_kfold(args, repo_root)

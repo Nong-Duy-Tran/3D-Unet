@@ -1,0 +1,75 @@
+seed: 42
+
+data:
+  format: jpg
+  fold_index: 0
+  train_dir: "data/processed_oasis_2d_cv5/axial/fold_${data.fold_index}/train"
+  val_dir: "data/processed_oasis_2d_cv5/axial/fold_${data.fold_index}/val"
+  classes: [normal, alzheimer]
+  jpg_view: axial
+  jpg_mode: 2p5d
+  image_size: 224
+  batch_size: 4
+  num_workers: 8
+  num_slices: 80
+  window_size: 5
+  slice_strategy_train: uniform
+  slice_strategy_val: uniform
+  normalize: true
+
+model:
+  name: vgg25d
+  vgg_name: vgg16_bn
+  pretrained: false
+  num_classes: 2
+  in_channels: 5
+  image_size: 224
+  dropout: 0.1
+  slice_attn_hidden_dim: null
+  slice_attn_dropout: 0.0
+  slice_attn_activation: tanh
+  slice_attn_use_layernorm: false
+
+training:
+  max_epochs: 128
+  lr: 1.0e-4
+  weight_decay: 0.05
+  optimizer:
+    name: AdamW
+  loss:
+    name: cross_entropy
+    label_smoothing: 0.0
+  accelerator: gpu
+  devices: [0]
+  precision: 32
+  accumulate_grad_batches: 1
+  freeze_backbone: false
+  freeze_backbone_ratio: 1.0
+  class_weights:
+    enabled: true
+  lr_scheduler:
+    enabled: true
+    name: CosineWarmup
+    warmup_epochs: 3
+    warmup_start_factor: 0.1
+    eta_min: 1.0e-6
+  early_stopping:
+    enabled: true
+    monitor: val/loss
+    mode: min
+    patience: 24
+    min_delta: 0.0
+
+logging:
+  wandb:
+    enabled: true
+    project: alzheimer-baseline
+    name: null
+    tags: [25d, axial, oasis, jpg]
+
+checkpoint:
+  dir: checkpoints/train_25d_oasis
+  monitor: val/auc_epoch
+  mode: max
+
+output_dir: outputs/train_25d_oasis

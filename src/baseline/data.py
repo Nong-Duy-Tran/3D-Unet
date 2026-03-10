@@ -387,6 +387,151 @@ class MRIVolumeJPGDataset(Dataset):
         return volume
 
 
+class MRIVolumeJPG25DDataset(Dataset):
+    """
+    Dataset for 2.5D MRI classification from ordered JPG slices.
+
+    Each subject is represented as N center slices sampled from the full stack.
+    For each center slice, a local window of `window_size` grayscale slices is
+    loaded as channels, producing tensors shaped (N, window_size, H, W).
+    """
+
+    def __init__(
+        self,
+        root_dir: str,
+        classes: list[str] | None = None,
+        class_map: dict[str, int] | None = None,
+        view: str = "axial",
+        num_slices: int = 80,
+        window_size: int = 5,
+        slice_strategy: str = "uniform",
+        image_size: int = 224,
+        augment: bool = False,
+        normalize: bool = True,
+        subject_ids: set[str] | None = None,
+    ):
+        if window_size <= 0 or window_size % 2 == 0:
+            raise ValueError("window_size must be a positive odd integer")
+
+        self.root_dir = root_dir
+        self.view = view.lower()
+        self.num_slices = int(num_slices) if num_slices is not None else 0
+        self.window_size = int(window_size)
+        self.slice_strategy = slice_strategy
+        self.image_size = int(image_size)
+        self.augment = augment
+        self.normalize = normalize
+        self.subject_ids = set(subject_ids) if subject_ids else None
+
+        self.samples: list[list[str]] = []
+        self.labels: list[int] = []
+
+        if class_map:
+            class_dirs = list(class_map.keys())
+        elif classes:
+            class_dirs = list(classes)
+        else:
+            class_dirs = sorted([p.name for p in Path(root_dir).iterdir() if p.is_dir()])
+
+        for class_name in class_dirs:
+            class_dir = Path(root_dir) / class_name
+            if not class_dir.exists():
+                print(f"Warning: {class_dir} not found")
+                continue
+
+            grouped: dict[str, list[tuple[int, str]]] = {}
+            for path in class_dir.glob("*.jpg"):
+                match = _JPG_SLICE_RE.match(path.stem)
+                if not match:
+                    continue
+                view = match.group("view").lower()
+                if self.view and view != self.view:
+                    continue
+                subject_id = match.group("stem")
+                idx = int(match.group("idx"))
+                grouped.setdefault(subject_id, []).append((idx, str(path)))
+
+            for subject_id, items in grouped.items():
+                if self.subject_ids is not None and subject_id not in self.subject_ids:
+                    continue
+                items_sorted = sorted(items, key=lambda x: x[0])
+                label = class_map[class_name] if class_map else class_dirs.index(class_name)
+                self.samples.append([p for _, p in items_sorted])
+                self.labels.append(label)
+
+        print(
+            f"Loaded {len(self.samples)} subjects from {root_dir} "
+            f"(view={self.view}, mode=2.5d, N={self.num_slices}, window={self.window_size})"
+        )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        slice_paths = self.samples[idx]
+        label = self.labels[idx]
+
+        center_indices = self._select_center_indices(len(slice_paths))
+        volume = self._load_windows(slice_paths, center_indices)
+
+        if self.normalize:
+            volume = self._normalize(volume)
+        if self.augment:
+            volume = self._augment(volume)
+
+        img_tensor = torch.from_numpy(volume).float()  # (N, W, H, W)
+        label_tensor = torch.tensor(label, dtype=torch.long)
+        return img_tensor, label_tensor
+
+    def _select_center_indices(self, total: int) -> list[int]:
+        if total == 0:
+            raise ValueError("No slices found for subject.")
+        if self.num_slices <= 0 or self.num_slices >= total:
+            return list(range(total))
+        if self.slice_strategy == "random":
+            indices = np.random.choice(total, size=self.num_slices, replace=False)
+            return sorted(indices.tolist())
+        if self.slice_strategy == "center":
+            center = total // 2
+            half = self.num_slices // 2
+            start = max(0, center - half)
+            indices = list(range(start, start + self.num_slices))
+            return [min(total - 1, max(0, i)) for i in indices]
+        return [int(round(i)) for i in np.linspace(0, total - 1, self.num_slices)]
+
+    def _load_windows(self, slice_paths: list[str], center_indices: list[int]) -> np.ndarray:
+        half = self.window_size // 2
+        windows = []
+        for center_idx in center_indices:
+            channel_slices = []
+            for offset in range(-half, half + 1):
+                idx = min(max(center_idx + offset, 0), len(slice_paths) - 1)
+                img = Image.open(slice_paths[idx]).convert("L")
+                if self.image_size:
+                    img = img.resize((self.image_size, self.image_size), resample=Image.BILINEAR)
+                arr = np.asarray(img, dtype=np.float32) / 255.0
+                channel_slices.append(arr)
+            windows.append(np.stack(channel_slices, axis=0))
+        return np.stack(windows, axis=0)
+
+    @staticmethod
+    def _normalize(volume: np.ndarray) -> np.ndarray:
+        mean = float(volume.mean())
+        std = float(volume.std())
+        if std > 0:
+            volume = (volume - mean) / std
+        return volume
+
+    def _augment(self, volume: np.ndarray) -> np.ndarray:
+        if random.random() > 0.5:
+            volume = np.flip(volume, axis=2).copy()
+        if random.random() > 0.5:
+            volume = np.flip(volume, axis=3).copy()
+        if random.random() > 0.5:
+            volume = volume * random.uniform(0.9, 1.1)
+        return volume
+
+
 def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
                    target_shape=(64, 64, 64),
                    weighted_sampler=False, use_2d=False,
@@ -398,7 +543,9 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
                    data_format="nifti",
                    classes=None,
                    class_map=None,
-                   jpg_view="ax",
+                   jpg_view="axial",
+                   jpg_mode="stack",
+                   window_size=5,
                    image_size=None,
                    train_subject_ids=None,
                    val_subject_ids=None):
@@ -427,7 +574,9 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         data_format: 'nifti' or 'jpg'
         classes: Optional list of class folder names (jpg)
         class_map: Optional mapping {folder_name: label} (jpg)
-        jpg_view: Slice view to stack from jpgs (ax|sag|cor)
+        jpg_view: Slice view to stack from jpgs
+        jpg_mode: 'stack' for 2D slice stacks or '2p5d' for windowed 2.5D stacks
+        window_size: Local context size for jpg_mode='2p5d' (must be odd)
         image_size: Resize jpg slices to this size (jpg)
         train_subject_ids: Optional set/list of subject IDs to include in train
         val_subject_ids: Optional set/list of subject IDs to include in val
@@ -458,29 +607,31 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
     if data_format == "jpg":
         if image_size is None:
             raise ValueError("image_size must be set when data_format='jpg'")
-        train_dataset = MRIVolumeJPGDataset(
-            train_dir,
+        dataset_cls = MRIVolumeJPG25DDataset if str(jpg_mode).lower() in {"2p5d", "2.5d"} else MRIVolumeJPGDataset
+        common_kwargs = dict(
             classes=classes,
             class_map=class_map,
             view=jpg_view,
             num_slices=num_slices,
-            slice_strategy=slice_strategy_train,
             image_size=image_size,
-            augment=True,
             normalize=normalize,
-            subject_ids=train_subject_ids,
         )
-        val_dataset = MRIVolumeJPGDataset(
+        if dataset_cls is MRIVolumeJPG25DDataset:
+            common_kwargs["window_size"] = window_size
+
+        train_dataset = dataset_cls(
+            train_dir,
+            slice_strategy=slice_strategy_train,
+            augment=True,
+            subject_ids=train_subject_ids,
+            **common_kwargs,
+        )
+        val_dataset = dataset_cls(
             val_dir,
-            classes=classes,
-            class_map=class_map,
-            view=jpg_view,
-            num_slices=num_slices,
             slice_strategy=slice_strategy_val,
-            image_size=image_size,
             augment=False,
-            normalize=normalize,
             subject_ids=val_subject_ids,
+            **common_kwargs,
         )
     else:
         train_dataset = MRIClassificationDataset(

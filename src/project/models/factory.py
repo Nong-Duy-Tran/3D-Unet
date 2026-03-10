@@ -40,6 +40,50 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
             }
         )
         return model_kwargs
+    if cfg.model.name == "timm25d":
+        image_size = getattr(cfg.model, "image_size", None)
+        if image_size is None:
+            image_size = int(getattr(cfg.data, "image_size", 224))
+        in_channels = getattr(cfg.model, "in_channels", None)
+        if in_channels is None:
+            in_channels = int(getattr(cfg.data, "window_size", 5))
+        model_kwargs.update(
+            {
+                "timm_name": cfg.model.timm_name,
+                "pretrained": cfg.model.pretrained,
+                "image_size": image_size,
+                "in_channels": in_channels,
+                "drop_path_rate": cfg.model.drop_path_rate,
+                "attn_drop_rate": cfg.model.attn_drop_rate,
+                "dropout": cfg.model.dropout,
+                "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
+                "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
+                "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
+                "slice_attn_use_layernorm": bool(getattr(cfg.model, "slice_attn_use_layernorm", False)),
+            }
+        )
+        return model_kwargs
+    if cfg.model.name == "vgg25d":
+        image_size = getattr(cfg.model, "image_size", None)
+        if image_size is None:
+            image_size = int(getattr(cfg.data, "image_size", 224))
+        in_channels = getattr(cfg.model, "in_channels", None)
+        if in_channels is None:
+            in_channels = int(getattr(cfg.data, "window_size", 5))
+        model_kwargs.update(
+            {
+                "vgg_name": getattr(cfg.model, "vgg_name", "vgg16_bn"),
+                "pretrained": bool(getattr(cfg.model, "pretrained", False)),
+                "image_size": image_size,
+                "in_channels": in_channels,
+                "dropout": cfg.model.dropout,
+                "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
+                "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
+                "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
+                "slice_attn_use_layernorm": bool(getattr(cfg.model, "slice_attn_use_layernorm", False)),
+            }
+        )
+        return model_kwargs
     if cfg.model.name in vgg_model_names:
         image_size = getattr(cfg.model, "image_size", None)
         if image_size is None:
@@ -137,4 +181,3 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
 
 def create_model_from_config(cfg: DictConfig):
     return get_model(model_name=cfg.model.name, **build_model_kwargs(cfg))
-
