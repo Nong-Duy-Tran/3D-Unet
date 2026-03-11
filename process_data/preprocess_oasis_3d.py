@@ -386,24 +386,48 @@ def crop_nonblank_3d(
 
 def reorient_to_team_convention(img: nib.Nifti1Image) -> nib.Nifti1Image:
     """
-    Reorient volume to the team's view convention used in downstream inspection:
-      - axis 0: coronal index
-      - axis 1: axial index
-      - axis 2: sagital index
+    Reorient the volume to true RAS+ orientation using explicit numpy ops.
+
+    After reorient_to_ras + resample + crop the OASIS voxel array has a
+    physical axis layout of (A, I, R):
+        axis 0 → Anterior  (Coronal planes)       aff2axcodes[0] = 'A'
+        axis 1 → Inferior  (Axial planes, flipped) aff2axcodes[1] = 'I'
+        axis 2 → Right     (Sagittal planes)       aff2axcodes[2] = 'R'
+
+    Instead we do the transform manually with numpy:
+        Step 1 – transpose (2, 0, 1):  (A, I, R) → (R, A, I)
+        Step 2 – flip axis-2:          (R, A, I) → (R, A, S)
+
+    The affine is updated to match so saved .nii.gz files report ('R','A','S').
     """
     data = img.get_fdata(dtype=np.float32)
-    src_ornt = io_orientation(img.affine)
+    affine = img.affine.copy()
 
-    dst_ornt = np.array([[0.0, -1.0], [1.0, 1.0], [2.0, -1.0]], dtype=np.float64)
-    transform = ornt_transform(src_ornt, dst_ornt)
+    # ------------------------------------------------------------------
+    # Step 1: permute axes (A,I,R) → (R,A,I)
+    #   new axis-0 = old axis-2  (R direction)
+    #   new axis-1 = old axis-0  (A direction)
+    #   new axis-2 = old axis-1  (I direction, will be flipped next)
+    # ------------------------------------------------------------------
+    data = np.transpose(data, (2, 0, 1))
 
-    data_out = apply_orientation(data, transform)
-    aff_out = img.affine @ inv_ornt_aff(transform, img.shape)
+    # Permute affine columns the same way; origin (voxel 0,0,0) is unchanged.
+    new_affine = affine.copy()
+    new_affine[:3, :3] = affine[:3, [2, 0, 1]]
 
-    out = nib.Nifti1Image(data_out, aff_out)
-    out.set_qform(aff_out, code=1)
-    out.set_sform(aff_out, code=1)
-    return out
+    # ------------------------------------------------------------------
+    # Step 2: flip axis-2  (I → S)
+    #   voxel index c maps to (n2-1-c), so:
+    #     new_origin += old_col2 * (n2 - 1)
+    #     new_col2   = -old_col2
+    # ------------------------------------------------------------------
+    n2 = data.shape[2]
+    data = np.ascontiguousarray(data[:, :, ::-1])
+
+    new_affine[:3, 3] = new_affine[:3, 3] + new_affine[:3, 2] * (n2 - 1)
+    new_affine[:3, 2] = -new_affine[:3, 2]
+
+    return nib.Nifti1Image(data, new_affine, img.header)
 
 
 def preprocess_volume(
