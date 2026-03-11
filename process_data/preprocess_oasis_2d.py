@@ -1,20 +1,9 @@
 """
 2D Data preprocessing script for OASIS Alzheimer's Disease dataset
-Extracts 120 center axial slices with smart cropping and padding
+Extracts center axial slices (axis=2) with smart cropping and padding.
 
 Input: Pre-processed skull-stripped data from processed_oasis_cv5_skullstrip
   Structure: fold_X/{train,val,test}/{normal,alzheimer}/*.nii.gz
-  - Skull stripping already applied (HD-BET)
-  - 1mm isotropic voxel spacing
-  - NIfTI format (.nii.gz)
-
-This script applies the 2D slice extraction pipeline:
-- RAS orientation (standardized)
-- Smart cropping: removes black regions (front of nose, back of head)
-- Center padding: maintains brain at center with target shape
-- 1mm voxel standardization via resizing (if needed)
-- Intensity normalization (percentile-based)
-- Preserves existing 5-fold cross-validation splits
 """
 import os
 import json
@@ -23,7 +12,6 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 import nibabel as nib
-from scipy import ndimage
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -118,125 +106,72 @@ def find_subjects_from_preprocessed_folds(input_dir, verbose=False):
     return all_subjects, folds
 
 
-def to_ras_orientation(img):
-    """
-    Convert image to RAS+ orientation (Right-Anterior-Superior)
-    Standard neuroimaging orientation
-    """
-    # Get current orientation
-    ornt = nib.orientations.io_orientation(img.affine)
-    # Convert to RAS+
-    ras_ornt = nib.orientations.axcodes2ornt(('R', 'A', 'S'))
-    # Calculate transformation
-    transform = nib.orientations.ornt_transform(ornt, ras_ornt)
-    # Apply transformation - squeeze to remove any singleton dimensions
-    data = nib.orientations.apply_orientation(img.get_fdata(), transform)
-    data = np.squeeze(data)  # Remove singleton dimensions (e.g., shape (176,208,160,1) -> (176,208,160))
-    
-    # Update affine
-    new_affine = img.affine @ nib.orientations.inv_ornt_aff(transform, img.shape)
-    
-    return nib.Nifti1Image(data, new_affine)
-
-
 def analyze_axial_content(data, num_slices=120):
-    """
-    Analyze axial slice content to find optimal bounding box
-    
-    Args:
-        data: 3D array in RAS orientation (X, Y, Z) where Y is axial direction
-        num_slices: Number of center slices to analyze
-    
-    Returns:
-        Dictionary with bounding box stats across slices
-    """
-    y_dim = data.shape[1]
-    start_idx = (y_dim - num_slices) // 2
+    z_dim = data.shape[2]
+    start_idx = (z_dim - num_slices) // 2
     end_idx = start_idx + num_slices
-    
-    # Analyze each axial slice to find content boundaries
+
     x_mins, x_maxs = [], []
-    z_mins, z_maxs = [], []
-    
-    for y_idx in range(start_idx, end_idx):
-        slice_2d = data[:, y_idx, :]  # Axial slice (X, Z)
-        
-        # Find non-zero content
-        mask = slice_2d > slice_2d.mean() * 0.1  # Threshold at 10% of mean
+    y_mins, y_maxs = [], []
+
+    for z_idx in range(start_idx, end_idx):
+        slice_2d = data[:, :, z_idx]
+        mask = slice_2d > slice_2d.mean() * 0.1
         if mask.sum() > 0:
-            x_coords, z_coords = np.where(mask)
+            x_coords, y_coords = np.where(mask)
             if len(x_coords) > 0:
                 x_mins.append(x_coords.min())
                 x_maxs.append(x_coords.max())
-                z_mins.append(z_coords.min())
-                z_maxs.append(z_coords.max())
-    
-    # Use median boundaries to avoid outliers
+                y_mins.append(y_coords.min())
+                y_maxs.append(y_coords.max())
+
     if len(x_mins) > 0:
-        x_min = int(np.percentile(x_mins, 5))  # 5th percentile for robustness
-        x_max = int(np.percentile(x_maxs, 95))  # 95th percentile
-        z_min = int(np.percentile(z_mins, 5))
-        z_max = int(np.percentile(z_maxs, 95))
-        
+        x_min = int(np.percentile(x_mins, 5))
+        x_max = int(np.percentile(x_maxs, 95))
+        y_min = int(np.percentile(y_mins, 5))
+        y_max = int(np.percentile(y_maxs, 95))
+
         width = x_max - x_min + 1
-        height = z_max - z_min + 1
-        
+        height = y_max - y_min + 1
+
         return {
             'x_min': x_min, 'x_max': x_max,
-            'z_min': z_min, 'z_max': z_max,
+            'y_min': y_min, 'y_max': y_max,
             'width': width, 'height': height,
             'max_dim': max(width, height)
         }
-    
+
     return None
 
 
 def crop_and_pad_axial_slices(data, num_slices=120, target_size=224):
-    """
-    Crop axial slices to remove black regions, then pad to square target size
-    while keeping brain centered
-    
-    Args:
-        data: 3D array in RAS orientation (X, Y, Z)
-        num_slices: Number of center axial slices
-        target_size: Target square size (e.g., 224, 240, 256)
-    
-    Returns:
-        4D array (num_slices, target_size, target_size) with cropped and padded axial slices
-    """
-    # First, extract center axial slices
-    y_dim = data.shape[1]
-    if y_dim < num_slices:
-        # Pad if not enough slices
-        pad_before = (num_slices - y_dim) // 2
-        pad_after = num_slices - y_dim - pad_before
-        data = np.pad(data, ((0, 0), (pad_before, pad_after), (0, 0)), mode='constant')
+    z_dim = data.shape[2]
+    if z_dim < num_slices:
+        pad_before = (num_slices - z_dim) // 2
+        pad_after = num_slices - z_dim - pad_before
+        data = np.pad(data, ((0, 0), (0, 0), (pad_before, pad_after)), mode='constant')
     else:
-        # Extract center slices
-        start_idx = (y_dim - num_slices) // 2
-        data = data[:, start_idx:start_idx + num_slices, :]
-    
-    # Analyze content to find optimal bounding box
+        start_idx = (z_dim - num_slices) // 2
+        data = data[:, :, start_idx:start_idx + num_slices]
+
     bbox = analyze_axial_content(data, num_slices)
-    
+
     if bbox is None:
-        # Fallback: just resize without cropping
         print("  Warning: Could not detect content, using full image")
         x_min, x_max = 0, data.shape[0] - 1
-        z_min, z_max = 0, data.shape[2] - 1
+        y_min, y_max = 0, data.shape[1] - 1
     else:
         x_min, x_max = bbox['x_min'], bbox['x_max']
-        z_min, z_max = bbox['z_min'], bbox['z_max']
-        print(f"  Content bounding box: X[{x_min}:{x_max}], Z[{z_min}:{z_max}], Size: {bbox['width']}x{bbox['height']}")
-    
-    # Crop all slices using the bounding box
+        y_min, y_max = bbox['y_min'], bbox['y_max']
+        print(f"  Content bounding box: X[{x_min}:{x_max}], Y[{y_min}:{y_max}], Size: {bbox['width']}x{bbox['height']}")
+
     cropped_slices = []
-    for y_idx in range(num_slices):
-        slice_2d = data[:, y_idx, :]  # (X, Z)
-        cropped = slice_2d[x_min:x_max+1, z_min:z_max+1]
+    for z_idx in range(num_slices):
+        slice_2d = data[:, :, z_idx]
+        cropped = slice_2d[x_min:x_max+1, y_min:y_max+1]
+        cropped = np.rot90(cropped, k=3)
         cropped_slices.append(cropped)
-    
-    # Now resize and pad each slice to target_size x target_size
+
     processed_slices = []
     for cropped in cropped_slices:
         h, w = cropped.shape
@@ -364,74 +299,20 @@ def investigate_optimal_size(data, num_slices=120):
         return 256  # Cap at 256
 
 
-def standardize_to_1mm(data, original_voxel_size=(1.0, 1.0, 1.0)):
-    """
-    Standardize voxel spacing to 1mm isotropic
-    
-    Args:
-        data: 3D array
-        original_voxel_size: Original voxel dimensions (x, y, z) in mm
-    
-    Returns:
-        Resampled data with 1mm voxel spacing
-    """
-    # Calculate zoom factors to achieve 1mm spacing
-    zoom_factors = original_voxel_size
-    
-    # Only resample if not already 1mm
-    if not np.allclose(zoom_factors, [1.0, 1.0, 1.0]):
-        print(f"  Resampling from {original_voxel_size} to 1mm isotropic")
-        data = ndimage.zoom(data, zoom_factors, order=1, mode='constant', cval=0.0)
-    
-    return data
-
-
 def process_single_subject(img_file, subject_id, args):
-    """
-    Process a single subject: load, preprocess, extract 2D slices
-    
-    Returns:
-        Processed 4D array (num_slices, img_size, img_size) or None if failed
-    """
     try:
-        # Load image (Analyze format)
         img = nib.load(img_file)
-        
-        # Convert to RAS orientation (REQUIRED for consistent anatomical orientation)
-        if args.ras_orient:
-            img = to_ras_orientation(img)
-
-        # Get data and squeeze to remove singleton dimensions
-        # NIfTI format may have singleton dimensions
         data = np.squeeze(img.get_fdata()).astype(np.float32)
-        
-        # Get voxel size for 1mm standardization
-        voxel_size = img.header.get_zooms()[:3] if hasattr(img.header, 'get_zooms') else (1.0, 1.0, 1.0)
-        
-        # Standardize to 1mm isotropic voxels
-        data = standardize_to_1mm(data, voxel_size)
-        
-        # Investigate optimal size (only print for first subject if verbose)
-        if args.verbose:
-            recommended_size = investigate_optimal_size(data, args.num_slices)
-            print(f"  Recommended target size for {subject_id}: {recommended_size}x{recommended_size}")
-        
-        # Crop and pad axial slices intelligently
-        # This removes black regions (front of nose, back of head) and pads to target size
-        data = crop_and_pad_axial_slices(data, num_slices=args.num_slices, target_size=args.img_size)
-        
-        # Normalize intensity
-        data = normalize_intensity(data, method=args.norm_method)
-        
-        # Transpose to (img_size, img_size, num_slices) for consistency with old format
-        # This makes it compatible with existing dataset loading code
-        data = np.transpose(data, (1, 2, 0))
 
-        # Final crop/pad to guarantee exact target shape (img_size, img_size, num_slices)
+        data = crop_and_pad_axial_slices(data, num_slices=args.num_slices, target_size=args.img_size)
+        data = normalize_intensity(data, method=args.norm_method)
+
+        # (num_slices, H, W) -> (H, W, num_slices)
+        data = np.transpose(data, (1, 2, 0))
         data = center_crop_or_pad(data, (args.img_size, args.img_size, args.num_slices))
-        
+
         return data
-        
+
     except Exception as e:
         print(f"\nError processing {subject_id}: {e}")
         import traceback
@@ -581,7 +462,6 @@ def save_processed_data(subjects, folds, output_dir, args):
             'preprocessing': {
                 'img_size': args.img_size,
                 'num_slices': args.num_slices,
-                'ras_orient': args.ras_orient,
                 'skull_strip': 'pre-applied',
                 'norm_method': args.norm_method
             }
@@ -602,14 +482,10 @@ def save_processed_data(subjects, folds, output_dir, args):
         'preprocessing_config': {
             'img_size': args.img_size,
             'num_slices': args.num_slices,
-            'ras_orient': args.ras_orient,
-            'skull_strip': 'pre-applied (input data already skull-stripped)',
+            'skull_strip': 'pre-applied',
             'smart_cropping': True,
             'center_padding': True,
-            'voxel_standardization_1mm': True,
             'norm_method': args.norm_method,
-            'original_axial_shape': '(256, 256, 160)',
-            'notes': 'Smart crop/pad with brain centered; skull stripping pre-applied via HD-BET'
         }
     }
     
@@ -644,11 +520,9 @@ def main(args):
     print(f"Preprocessing options:")
     print(f"  - Target image size: {args.img_size}x{args.img_size}")
     print(f"  - Number of center axial slices: {args.num_slices}")
-    print(f"  - RAS orientation: {args.ras_orient}")
     print(f"  - Skull stripping: PRE-APPLIED (data already skull-stripped)")
     print(f"  - Smart cropping: Enabled (removes black regions)")
     print(f"  - Center padding: Enabled (brain centered in frame)")
-    print(f"  - 1mm voxel standardization: Enabled")
     print(f"  - Intensity normalization: {args.norm_method}")
 
     # Load subjects and pre-defined folds from the preprocessed directory
@@ -703,13 +577,6 @@ if __name__ == "__main__":
         type=int,
         default=120,
         help='Number of center axial slices to extract (default: 120)'
-    )
-    
-    parser.add_argument(
-        '--ras_orient',
-        action='store_true',
-        default=True,
-        help='Convert to RAS+ orientation (STRONGLY RECOMMENDED for consistent anatomy)'
     )
     
     parser.add_argument(
