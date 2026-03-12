@@ -337,6 +337,9 @@ def main(args, fold):
                 'val_acc': val_metrics['accuracy'],
                 'train_auc': train_metrics['auc'],
                 'val_auc': val_metrics['auc'],
+                'val_recall': val_metrics['recall'],
+                'val_precision': val_metrics['precision'],
+                'val_f1': val_metrics['f1'],
                 'lr': optimizer.param_groups[0]['lr']
             })
         
