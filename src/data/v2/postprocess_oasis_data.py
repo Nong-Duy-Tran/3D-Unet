@@ -1,7 +1,7 @@
 """
-Create oriented 2D JPG slices from preprocessed OASIS NIfTI volumes.
+Create oriented 2D JPG slices from N4 + WhiteStripe normalized OASIS NIfTI volumes.
 
-Input layout (from preprocess_oasis_data.py):
+Input layout (from v2/preprocess_oasis_data.py):
   <input_dir>/fold_<k>/{train,val,test}/{normal,alzheimer}/*.nii.gz
 
 Output layout:
@@ -53,18 +53,20 @@ def _orient_slice_for_export(slice_2d: np.ndarray, axis: int) -> np.ndarray:
     return slice_2d
 
 
-def _to_uint8(slice_2d: np.ndarray) -> np.ndarray:
+def _normalized_slice_to_uint8(
+    slice_2d: np.ndarray,
+    clip_min: float,
+    clip_max: float,
+) -> np.ndarray:
     arr = np.asarray(slice_2d, dtype=np.float32)
     finite = np.isfinite(arr)
     if not finite.any():
         return np.zeros(arr.shape, dtype=np.uint8)
     arr = np.where(finite, arr, 0.0)
-    vmin = float(arr.min())
-    vmax = float(arr.max())
-    if vmax > vmin:
-        arr = (arr - vmin) / (vmax - vmin)
-    else:
-        arr = np.zeros_like(arr, dtype=np.float32)
+    if clip_max <= clip_min:
+        raise ValueError("clip_max must be greater than clip_min")
+    arr = np.clip(arr, clip_min, clip_max)
+    arr = (arr - clip_min) / (clip_max - clip_min)
     return (arr * 255.0).clip(0, 255).astype(np.uint8)
 
 
@@ -111,19 +113,19 @@ def _iter_nifti_samples(input_dir: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create oriented, center-padded JPG slices from preprocessed OASIS NIfTI volumes.",
+        description="Create oriented, center-padded JPG slices from N4 + WhiteStripe normalized OASIS NIfTI volumes.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--input_dir",
         type=str,
-        default="data/processed_oasis_3d_cv5",
+        default="data/processed_oasis_3d_cv5_n4",
         help="Directory containing preprocessed folds with NIfTI files.",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data/processed_oasis_2d_cv5",
+        default="data/processed_oasis_2d_cv5_n4",
         help="Directory to write oriented, padded JPG slices.",
     )
     parser.add_argument(
@@ -163,6 +165,18 @@ def main() -> None:
         help="JPEG quality when saving slices.",
     )
     parser.add_argument(
+        "--clip_min",
+        type=float,
+        default=-5.0,
+        help="Lower bound in normalized intensity space before mapping to uint8.",
+    )
+    parser.add_argument(
+        "--clip_max",
+        type=float,
+        default=5.0,
+        help="Upper bound in normalized intensity space before mapping to uint8.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing slice files.",
@@ -186,6 +200,8 @@ def main() -> None:
         raise ValueError("Require 0.0 <= --slice_ratio_start < --slice_ratio_end <= 1.0")
     if not (0 <= args.pad_value <= 255):
         raise ValueError("--pad_value must be in [0, 255]")
+    if args.clip_max <= args.clip_min:
+        raise ValueError("--clip_max must be greater than --clip_min")
 
     samples = list(_iter_nifti_samples(input_dir))
     if not samples:
@@ -222,7 +238,11 @@ def main() -> None:
 
                 slice_2d = _extract_slice(volume, axis, idx)
                 slice_2d = _orient_slice_for_export(slice_2d, axis)
-                slice_u8 = _to_uint8(slice_2d)
+                slice_u8 = _normalized_slice_to_uint8(
+                    slice_2d,
+                    clip_min=args.clip_min,
+                    clip_max=args.clip_max,
+                )
                 padded = _center_pad_or_crop(
                     slice_u8,
                     target_h=args.target_size,

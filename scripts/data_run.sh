@@ -1,0 +1,2 @@
+python src/data/v1/preprocess_oasis_data.py --oasis_dir data/OASIS --output_dir data/processed_oasis_3d_cv5 --n_folds 5 --val_ratio 0.15 --seed 42 --skull_strip --hdbet_device cuda
+python src/data/v1/postprocess_oasis_data.py --input_dir data/processed_oasis_3d_cv5 --output_dir data/processed_oasis_2d_cv5

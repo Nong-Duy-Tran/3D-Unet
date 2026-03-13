@@ -3,7 +3,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from ..slice_attention import SliceAttentionPool
+from ..slice_attention import (
+    SliceAttentionPool,
+    SlicePositionalEncoding,
+    SliceSelfAttentionEncoder,
+)
 
 
 class VGG25DClassifier(nn.Module):
@@ -17,6 +21,16 @@ class VGG25DClassifier(nn.Module):
         in_channels: int = 5,
         num_classes: int = 2,
         dropout: float = 0.1,
+        slice_embed_dim: int | None = None,
+        slice_pos_encoding: str = "none",
+        slice_pos_max_len: int = 512,
+        slice_pos_dropout: float = 0.0,
+        slice_sequence_encoder: str = "none",
+        slice_num_heads: int = 8,
+        slice_transformer_depth: int = 1,
+        slice_transformer_mlp_ratio: float = 4.0,
+        slice_transformer_dropout: float = 0.0,
+        slice_transformer_attn_dropout: float = 0.0,
         slice_attn_hidden_dim: int | None = None,
         slice_attn_dropout: float = 0.0,
         slice_attn_activation: str = "tanh",
@@ -37,18 +51,41 @@ class VGG25DClassifier(nn.Module):
             *list(backbone.classifier[:-1]),
         )
         embed_dim = 4096
+        sequence_dim = int(slice_embed_dim) if slice_embed_dim is not None else embed_dim
+        if sequence_dim <= 0:
+            raise ValueError("slice_embed_dim must be > 0")
+        self.slice_proj = nn.Identity() if sequence_dim == embed_dim else nn.Linear(embed_dim, sequence_dim)
+        self.slice_pos = SlicePositionalEncoding(
+            embed_dim=sequence_dim,
+            mode=slice_pos_encoding,
+            max_len=slice_pos_max_len,
+            dropout=slice_pos_dropout,
+        )
+        self.slice_sequence = SliceSelfAttentionEncoder(
+            embed_dim=sequence_dim,
+            mode=slice_sequence_encoder,
+            num_heads=slice_num_heads,
+            depth=slice_transformer_depth,
+            mlp_ratio=slice_transformer_mlp_ratio,
+            dropout=slice_transformer_dropout,
+            attn_dropout=slice_transformer_attn_dropout,
+        )
         self.pool = SliceAttentionPool(
-            embed_dim,
+            sequence_dim,
             hidden_dim=slice_attn_hidden_dim,
             dropout=slice_attn_dropout,
             activation=slice_attn_activation,
             use_layernorm=slice_attn_use_layernorm,
         )
         self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(embed_dim, num_classes)
+        self.classifier = nn.Linear(sequence_dim, num_classes)
 
         if not pretrained:
             self._init_weights(self.encoder)
+        self._init_weights(self.slice_proj)
+        if slice_pos_encoding == "learned":
+            self._init_weights(self.slice_pos)
+        self._init_weights(self.slice_sequence)
         self._init_weights(self.pool)
         self._init_weights(self.classifier)
 
@@ -143,6 +180,9 @@ class VGG25DClassifier(nn.Module):
         x = x.view(b * n, c, h, w)
         feats = self.encoder(x)
         feats = feats.view(b, n, -1)
+        feats = self.slice_proj(feats)
+        feats = self.slice_pos(feats)
+        feats = self.slice_sequence(feats)
         pooled = self.pool(feats)
         pooled = self.dropout(pooled)
         return self.classifier(pooled)
@@ -156,6 +196,16 @@ def default_config():
         "in_channels": 5,
         "num_classes": 2,
         "dropout": 0.1,
+        "slice_embed_dim": None,
+        "slice_pos_encoding": "none",
+        "slice_pos_max_len": 512,
+        "slice_pos_dropout": 0.0,
+        "slice_sequence_encoder": "none",
+        "slice_num_heads": 8,
+        "slice_transformer_depth": 1,
+        "slice_transformer_mlp_ratio": 4.0,
+        "slice_transformer_dropout": 0.0,
+        "slice_transformer_attn_dropout": 0.0,
         "slice_attn_hidden_dim": None,
         "slice_attn_dropout": 0.0,
         "slice_attn_activation": "tanh",

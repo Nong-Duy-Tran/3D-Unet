@@ -25,6 +25,9 @@ model:
   in_channels: 5
   image_size: 224
   dropout: 0.1
+  slice_pos_encoding: learned
+  slice_pos_max_len: 80
+  slice_pos_dropout: 0.0
   slice_attn_hidden_dim: null
   slice_attn_dropout: 0.0
   slice_attn_activation: tanh
@@ -65,11 +68,11 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    tags: [25d, axial, oasis, jpg]
+    tags: [25d, axial, oasis, jpg, posenc]
 
 checkpoint:
-  dir: checkpoints/25d/vgg16_bn_attn_80sl_5folds
+  dir: checkpoints/25d/vgg16_bn_attn_pos_80sl_5folds
   monitor: val/auc_epoch
   mode: max
 
-output_dir: outputs/25d/vgg16_bn_attn_80sl_5folds
+output_dir: outputs/25d/vgg16_bn_attn_pos_80sl_5folds

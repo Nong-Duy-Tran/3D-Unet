@@ -9,26 +9,38 @@ data:
   jpg_view: axial
   jpg_mode: 2p5d
   image_size: 224
-  batch_size: 4
+  batch_size: 8
   num_workers: 8
-  num_slices: 80
+  num_slices: 64
   window_size: 5
   slice_strategy_train: uniform
   slice_strategy_val: uniform
   normalize: true
 
 model:
-  name: vgg25d
-  vgg_name: vgg16_bn
+  name: timm25d
+  timm_name: resnet18
   pretrained: false
   num_classes: 2
   in_channels: 5
   image_size: 224
   dropout: 0.1
+  slice_embed_dim: 512
+  slice_pos_encoding: learned
+  slice_pos_max_len: 64
+  slice_pos_dropout: 0.0
+  slice_sequence_encoder: self_attention
+  slice_num_heads: 8
+  slice_transformer_depth: 1
+  slice_transformer_mlp_ratio: 4.0
+  slice_transformer_dropout: 0.1
+  slice_transformer_attn_dropout: 0.1
   slice_attn_hidden_dim: null
   slice_attn_dropout: 0.0
   slice_attn_activation: tanh
   slice_attn_use_layernorm: true
+  drop_path_rate: 0.0
+  attn_drop_rate: 0.0
 
 training:
   max_epochs: 256
@@ -42,7 +54,7 @@ training:
   accelerator: gpu
   devices: [0]
   precision: 32
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   freeze_backbone: false
   freeze_backbone_ratio: 1.0
   class_weights:
@@ -65,11 +77,11 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    tags: [25d, axial, oasis, jpg]
+    tags: [25d, axial, oasis, jpg, resnet18, self-attn, posenc]
 
 checkpoint:
-  dir: checkpoints/25d/vgg16_bn_attn_80sl_5folds
+  dir: checkpoints/25d/resnet18_selfattn_pos_64sl_5folds
   monitor: val/auc_epoch
   mode: max
 
-output_dir: outputs/25d/vgg16_bn_attn_80sl_5folds
+output_dir: outputs/25d/resnet18_selfattn_pos_64sl_5folds

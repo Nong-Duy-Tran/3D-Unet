@@ -1,11 +1,11 @@
 """
-3D MRI Preprocessing Pipeline for OASIS (Alzheimer's Disease Classification)
-==============================================================================
+3D MRI preprocessing pipeline for OASIS v2.
 
 Two-stage design:
   Stage 1 - Cache: preprocess every subject exactly once.
-    load .img → skull-strip (HD-BET) → reorient RAS+ → resample 1 mm iso →
-    crop non-blank → team orientation remap → .nii.gz
+    load SUBJ_111 .img -> reorient RAS+ -> N4 bias correction ->
+    skull-strip (HD-BET) -> affine register to MNI -> resample 1 mm iso ->
+    WhiteStripe intensity normalization -> team orient -> crop non-blank -> .nii.gz
   Stage 2 - Assemble: populate fold dirs from cache via symlinks (no recomputation).
 
 Split strategy: true nested CV via outer StratifiedKFold (each subject in test exactly once).
@@ -31,8 +31,14 @@ from nibabel.orientations import (
     io_orientation,
     ornt_transform,
 )
+from scipy.interpolate import UnivariateSpline
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from tqdm import tqdm
+
+try:
+    import SimpleITK as sitk
+except Exception:  # pragma: no cover
+    sitk = None
 
 # ---------------------------------------------------------------------------
 # Default per-fold validation seeds (k = 5)
@@ -265,7 +271,7 @@ def _find_hdbet() -> str:
         if os.path.isfile(c):
             return c
     raise RuntimeError(
-        "hd-bet not found. Install HD-BET or disable --skull_strip."
+        "hd-bet not found. Install HD-BET to use the v2 preprocessing pipeline."
     )
 
 
@@ -332,6 +338,126 @@ def reorient_to_ras(img: nib.Nifti1Image) -> nib.Nifti1Image:
     return nib.as_closest_canonical(img)
 
 
+def n4_bias_correct(
+    img: nib.Nifti1Image,
+    subject_id: str,
+    shrink_factor: int = 4,
+    num_iterations: tuple[int, ...] = (50, 50, 30, 20),
+) -> nib.Nifti1Image:
+    """Apply N4 bias correction with an Otsu mask using SimpleITK."""
+    if sitk is None:
+        raise RuntimeError("SimpleITK is required for N4 bias correction.")
+
+    shrink_factor = max(1, int(shrink_factor))
+
+    with tempfile.TemporaryDirectory(prefix="n4_") as tmpdir:
+        in_path = os.path.join(tmpdir, f"{subject_id}_input.nii.gz")
+        out_path = os.path.join(tmpdir, f"{subject_id}_n4.nii.gz")
+        nib.save(img, in_path)
+
+        sitk_img = sitk.ReadImage(in_path, sitk.sitkFloat32)
+        mask = sitk.OtsuThreshold(sitk_img, 0, 1, 200)
+
+        corrector = sitk.N4BiasFieldCorrectionImageFilter()
+        corrector.SetMaximumNumberOfIterations(list(num_iterations))
+
+        if shrink_factor > 1:
+            shrink = [shrink_factor] * sitk_img.GetDimension()
+            sitk_img_small = sitk.Shrink(sitk_img, shrink)
+            mask_small = sitk.Shrink(mask, shrink)
+            corrector.Execute(sitk_img_small, mask_small)
+            log_bias = corrector.GetLogBiasFieldAsImage(sitk_img)
+            corrected = sitk_img / sitk.Exp(log_bias)
+        else:
+            corrected = corrector.Execute(sitk_img, mask)
+
+        sitk.WriteImage(corrected, out_path)
+        corrected_nib = nib.load(out_path)
+        data = corrected_nib.get_fdata(dtype=np.float32)
+        return nib.Nifti1Image(data, corrected_nib.affine, corrected_nib.header)
+
+
+def affine_register_to_mni(
+    img: nib.Nifti1Image,
+    subject_id: str,
+    template_path: Path,
+) -> nib.Nifti1Image:
+    """Affine registration to MNI space using SimpleITK Mattes mutual information."""
+    if sitk is None:
+        raise RuntimeError("SimpleITK is required for affine registration to MNI space.")
+    if not template_path.exists():
+        raise FileNotFoundError(
+            f"MNI template not found: {template_path}. "
+            "Provide --mni_template pointing to a local MNI T1 template."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="mni_affine_") as tmpdir:
+        moving_path = os.path.join(tmpdir, f"{subject_id}_moving.nii.gz")
+        fixed_path = os.path.join(tmpdir, "mni_fixed.nii.gz")
+        out_path = os.path.join(tmpdir, f"{subject_id}_mni_affine.nii.gz")
+        nib.save(img, moving_path)
+        shutil.copy2(str(template_path), fixed_path)
+
+        fixed = sitk.ReadImage(fixed_path, sitk.sitkFloat32)
+        moving = sitk.ReadImage(moving_path, sitk.sitkFloat32)
+        fixed_mask = sitk.OtsuThreshold(fixed, 0, 1, 200)
+        moving_mask = sitk.OtsuThreshold(moving, 0, 1, 200)
+
+        def _build_registration(initial_transform, use_masks: bool):
+            registration = sitk.ImageRegistrationMethod()
+            registration.SetMetricAsMattesMutualInformation(numberOfHistogramBins=50)
+            if use_masks:
+                registration.SetMetricFixedMask(fixed_mask)
+                registration.SetMetricMovingMask(moving_mask)
+            registration.SetMetricSamplingStrategy(registration.RANDOM)
+            registration.SetMetricSamplingPercentage(0.2)
+            registration.SetInterpolator(sitk.sitkLinear)
+            registration.SetOptimizerAsGradientDescent(
+                learningRate=1.0,
+                numberOfIterations=100,
+                convergenceMinimumValue=1e-6,
+                convergenceWindowSize=10,
+            )
+            registration.SetOptimizerScalesFromPhysicalShift()
+            registration.SetShrinkFactorsPerLevel([4, 2, 1])
+            registration.SetSmoothingSigmasPerLevel([2, 1, 0])
+            registration.SmoothingSigmasAreSpecifiedInPhysicalUnitsOn()
+            registration.SetInitialTransform(initial_transform, inPlace=False)
+            return registration
+
+        initial_transform = sitk.CenteredTransformInitializer(
+            fixed,
+            moving,
+            sitk.AffineTransform(3),
+            sitk.CenteredTransformInitializerFilter.GEOMETRY,
+        )
+
+        try:
+            final_transform = _build_registration(initial_transform, use_masks=True).Execute(fixed, moving)
+        except RuntimeError:
+            fallback_transform = sitk.CenteredTransformInitializer(
+                fixed,
+                moving,
+                sitk.AffineTransform(3),
+                sitk.CenteredTransformInitializerFilter.MOMENTS,
+            )
+            final_transform = _build_registration(fallback_transform, use_masks=False).Execute(fixed, moving)
+
+        resampled = sitk.Resample(
+            moving,
+            fixed,
+            final_transform,
+            sitk.sitkLinear,
+            0.0,
+            moving.GetPixelID(),
+        )
+        sitk.WriteImage(resampled, out_path)
+
+        registered_nib = nib.load(out_path)
+        data = registered_nib.get_fdata(dtype=np.float32)
+        return nib.Nifti1Image(data, registered_nib.affine, registered_nib.header)
+
+
 def resample_isotropic(img: nib.Nifti1Image, voxel_mm: float = 1.0) -> nib.Nifti1Image:
     """
     Resample image to isotropic *voxel_mm* mm resolution using trilinear interpolation.
@@ -384,6 +510,77 @@ def crop_nonblank_3d(
     return nib.Nifti1Image(cropped, new_affine, img.header)
 
 
+def whitestripe_intensity_normalize(
+    img: nib.Nifti1Image,
+    subject_id: str,
+    tau: float = 0.05,
+    slab_thickness_mm: int = 40,
+    histogram_bins: int = 512,
+) -> nib.Nifti1Image:
+    """
+    WhiteStripe-style 3D intensity normalization following Shinohara et al. (2014).
+
+    Practical adaptation for this pipeline:
+      - uses the center 40 mm slab after affine registration to MNI space
+      - estimates the white-matter mode with a smoothing spline over the histogram
+      - normalizes all foreground voxels using the mean/std of the stripe
+    """
+    data = img.get_fdata(dtype=np.float32)
+    foreground = np.isfinite(data) & (np.abs(data) > 1e-6)
+    if not foreground.any():
+        raise ValueError(f"WhiteStripe failed for {subject_id}: empty foreground")
+
+    axis = 2  # RAS/MNI space: axis 2 is axial index
+    axis_len = data.shape[axis]
+    slab_size = max(8, min(axis_len, int(round(slab_thickness_mm))))
+    start = max(0, (axis_len - slab_size) // 2)
+    end = min(axis_len, start + slab_size)
+
+    slab = np.take(data, indices=range(start, end), axis=axis)
+    slab_mask = np.take(foreground, indices=range(start, end), axis=axis)
+    slab_values = slab[slab_mask]
+    if slab_values.size < 256:
+        slab_values = data[foreground]
+
+    lower_clip, upper_clip = np.percentile(slab_values, [1.0, 99.0])
+    clipped = slab_values[(slab_values >= lower_clip) & (slab_values <= upper_clip)]
+    if clipped.size < 256:
+        clipped = slab_values
+
+    hist, edges = np.histogram(clipped, bins=histogram_bins)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    spline = UnivariateSpline(centers, hist.astype(np.float64), s=len(centers))
+    smooth_hist = spline(centers)
+
+    # For T1-w, white matter is expected on the brighter side of the histogram.
+    upper_half = centers >= np.quantile(clipped, 0.5)
+    candidate_idx = np.where(upper_half)[0]
+    if candidate_idx.size == 0:
+        candidate_idx = np.arange(len(centers))
+    peak_idx = candidate_idx[np.argmax(smooth_hist[candidate_idx])]
+    mu_star = float(centers[peak_idx])
+
+    full_values = data[foreground]
+    cdf_rank = float(np.mean(full_values <= mu_star))
+    lo_q = max(0.0, cdf_rank - tau)
+    hi_q = min(1.0, cdf_rank + tau)
+    lower, upper = np.quantile(full_values, [lo_q, hi_q])
+
+    stripe_mask = foreground & (data >= lower) & (data <= upper)
+    stripe_values = data[stripe_mask]
+    if stripe_values.size < 64:
+        raise ValueError(f"WhiteStripe failed for {subject_id}: stripe too small")
+
+    mu_ws = float(stripe_values.mean())
+    sigma_ws = float(stripe_values.std())
+    if not np.isfinite(sigma_ws) or sigma_ws <= 0:
+        raise ValueError(f"WhiteStripe failed for {subject_id}: invalid stripe std")
+
+    normalized = np.zeros_like(data, dtype=np.float32)
+    normalized[foreground] = (data[foreground] - mu_ws) / sigma_ws
+    return nib.Nifti1Image(normalized, img.affine, img.header)
+
+
 def reorient_to_team_convention(img: nib.Nifti1Image) -> nib.Nifti1Image:
     """
     Reorient volume to the team's view convention used in downstream inspection:
@@ -413,37 +610,49 @@ def reorient_to_team_convention(img: nib.Nifti1Image) -> nib.Nifti1Image:
 def preprocess_volume(
     img_path: Path,
     subject_id: str,
-    apply_skull_strip: bool = True,
+    mni_template_path: Path,
     hdbet_device: str = "cpu",
 ) -> nib.Nifti1Image:
     """
     Full 3D preprocessing pipeline for a single volume:
-      1. Load Analyze (.img) file
-      2. Reorient to RAS+ canonical (first normalization step)
-      3. Skull stripping via HD-BET (if enabled)
-      4. Resample to isotropic 1 mm
-      5. Crop to non-blank 3D bounding box
+      1. Load Analyze (.img) file from SUBJ_111
+      2. Reorient to RAS+ canonical
+      3. N4 bias correction
+      4. Skull stripping via HD-BET
+      5. Affine registration to MNI space
+      6. Resample to isotropic 1 mm
+      7. WhiteStripe intensity normalization
+      8. Reorient to team convention
+      9. Crop to non-blank 3D bounding box
 
     Returns a preprocessed nibabel image ready to save as .nii.gz.
     """
-    # 1. Load
-    img: nib.Nifti1Image = nib.load(str(img_path))
-
-    # Handle 4-D volumes (keep first volume)
+    img = nib.load(str(img_path))
     if img.ndim == 4:
         img = nib.Nifti1Image(img.get_fdata()[..., 0], img.affine, img.header)
 
-    # 2. Reorient to RAS+ first (unifies axis order across datasets)
+    # 2. Reorient to RAS+ canonical
     img = reorient_to_ras(img)
 
-    # 3. Skull stripping
-    if apply_skull_strip:
-        img = skull_strip(img, subject_id, device=hdbet_device)
+    # 3. N4 bias correction
+    img = n4_bias_correct(img, subject_id)
 
-    # 4. Resample to 1 mm isotropic
+    # 4. Skull stripping
+    img = skull_strip(img, subject_id, device=hdbet_device)
+
+    # 5. Affine registration to MNI space
+    img = affine_register_to_mni(img, subject_id, template_path=mni_template_path)
+
+    # 6. Resample to 1 mm isotropic
     img = resample_isotropic(img, voxel_mm=1.0)
 
-    # 5. Crop non-blank 3D
+    # 7. WhiteStripe intensity normalization (Shinohara et al., 2014)
+    img = whitestripe_intensity_normalize(img, subject_id)
+
+    # 8. Reorient to the team's fixed viewing convention
+    img = reorient_to_team_convention(img)
+
+    # 9. Crop non-blank 3D
     img = crop_nonblank_3d(img)
 
     return img
@@ -456,7 +665,7 @@ def preprocess_volume(
 def preprocess_all_to_cache(
     all_subjects: list[dict],
     cache_dir: Path,
-    apply_skull_strip: bool,
+    mni_template_path: Path,
     hdbet_device: str,
 ) -> dict[str, Path]:
     """
@@ -485,7 +694,7 @@ def preprocess_all_to_cache(
             processed = preprocess_volume(
                 Path(item["img_file"]),
                 sid,
-                apply_skull_strip=apply_skull_strip,
+                mni_template_path=mni_template_path,
                 hdbet_device=hdbet_device,
             )
             nib.save(processed, str(out_path))
@@ -646,8 +855,12 @@ def main(args: argparse.Namespace) -> None:
     print(f"Number of folds  : {args.n_folds}")
     print(f"Val ratio        : {args.val_ratio}")
     print(f"Outer seed       : {args.seed}")
-    print(f"Skull stripping  : {'ENABLED (device=' + args.hdbet_device + ')' if args.skull_strip else 'DISABLED'}")
-    print("Output orientation: RAS canonical")
+    print("Input source     : PROCESSED/MPRAGE/SUBJ_111")
+    print(f"MNI template     : {args.mni_template}")
+    print("N4 bias correction: ENABLED")
+    print("Intensity normalization: WhiteStripe 3D after affine MNI registration")
+    print(f"Skull stripping  : ENABLED (device={args.hdbet_device})")
+    print("Output orientation: team convention (coronal, axial flipped, sagittal)")
 
     # Resolve per-fold val seeds
     if args.fold_val_seeds:
@@ -712,7 +925,7 @@ def main(args: argparse.Namespace) -> None:
     cache_map = preprocess_all_to_cache(
         all_subjects,
         cache_dir=cache_dir,
-        apply_skull_strip=args.skull_strip,
+        mni_template_path=Path(args.mni_template),
         hdbet_device=args.hdbet_device,
     )
 
@@ -766,7 +979,7 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Preprocess OASIS 3D MRI data with stratified k-fold CV",
+        description="Preprocess OASIS 3D MRI data with N4 bias correction and stratified k-fold CV",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -775,8 +988,14 @@ if __name__ == "__main__":
         help="Root OASIS directory containing disc1, disc2, … sub-folders",
     )
     parser.add_argument(
-        "--output_dir", type=str, default="./data/processed_oasis_3d_cv5",
+        "--output_dir", type=str, default="./data/processed_oasis_3d_cv5_v2",
         help="Output directory for processed data",
+    )
+    parser.add_argument(
+        "--mni_template",
+        type=str,
+        default="./data/templates/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz",
+        help="Local path to the MNI T1 template used for affine registration",
     )
     parser.add_argument(
         "--n_folds", type=int, default=5,
@@ -797,10 +1016,6 @@ if __name__ == "__main__":
             "(e.g. '7,13,36,11,42'). "
             "Defaults to [7,13,36,11,42] for n_folds=5."
         ),
-    )
-    parser.add_argument(
-        "--skull_strip", action="store_true", default=False,
-        help="Apply HD-BET skull stripping (no fast mode, no TTA)",
     )
     parser.add_argument(
         "--hdbet_device", type=str, default="cpu", choices=["cpu", "cuda"],

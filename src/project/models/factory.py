@@ -33,6 +33,24 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "drop_path_rate": cfg.model.drop_path_rate,
                 "attn_drop_rate": cfg.model.attn_drop_rate,
                 "dropout": cfg.model.dropout,
+                "slice_embed_dim": getattr(cfg.model, "slice_embed_dim", None),
+                "slice_pos_encoding": getattr(cfg.model, "slice_pos_encoding", "none"),
+                "slice_pos_max_len": int(
+                    getattr(cfg.model, "slice_pos_max_len", getattr(cfg.data, "num_slices", 512))
+                ),
+                "slice_pos_dropout": float(getattr(cfg.model, "slice_pos_dropout", 0.0)),
+                "slice_sequence_encoder": getattr(cfg.model, "slice_sequence_encoder", "none"),
+                "slice_num_heads": int(getattr(cfg.model, "slice_num_heads", 8)),
+                "slice_transformer_depth": int(getattr(cfg.model, "slice_transformer_depth", 1)),
+                "slice_transformer_mlp_ratio": float(
+                    getattr(cfg.model, "slice_transformer_mlp_ratio", 4.0)
+                ),
+                "slice_transformer_dropout": float(
+                    getattr(cfg.model, "slice_transformer_dropout", 0.0)
+                ),
+                "slice_transformer_attn_dropout": float(
+                    getattr(cfg.model, "slice_transformer_attn_dropout", 0.0)
+                ),
                 "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
@@ -77,6 +95,24 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "image_size": image_size,
                 "in_channels": in_channels,
                 "dropout": cfg.model.dropout,
+                "slice_embed_dim": getattr(cfg.model, "slice_embed_dim", None),
+                "slice_pos_encoding": getattr(cfg.model, "slice_pos_encoding", "none"),
+                "slice_pos_max_len": int(
+                    getattr(cfg.model, "slice_pos_max_len", getattr(cfg.data, "num_slices", 512))
+                ),
+                "slice_pos_dropout": float(getattr(cfg.model, "slice_pos_dropout", 0.0)),
+                "slice_sequence_encoder": getattr(cfg.model, "slice_sequence_encoder", "none"),
+                "slice_num_heads": int(getattr(cfg.model, "slice_num_heads", 8)),
+                "slice_transformer_depth": int(getattr(cfg.model, "slice_transformer_depth", 1)),
+                "slice_transformer_mlp_ratio": float(
+                    getattr(cfg.model, "slice_transformer_mlp_ratio", 4.0)
+                ),
+                "slice_transformer_dropout": float(
+                    getattr(cfg.model, "slice_transformer_dropout", 0.0)
+                ),
+                "slice_transformer_attn_dropout": float(
+                    getattr(cfg.model, "slice_transformer_attn_dropout", 0.0)
+                ),
                 "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
