@@ -137,13 +137,13 @@ def main() -> None:
     parser.add_argument(
         "--input_dir",
         type=str,
-        default="data/processed_oasis_3d_cv5",
+        default="data/processed_oasis_3d_cv5_v3",
         help="Directory containing preprocessed folds with NIfTI files.",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data/processed_oasis_2d_cv5",
+        default="data/processed_oasis_2d_cv5_v3",
         help="Directory to write oriented, padded JPG slices.",
     )
     parser.add_argument(

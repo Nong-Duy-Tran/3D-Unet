@@ -8,7 +8,12 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 import torch
 
 from src.baseline.utils import find_repo_root
-from src.project.data import build_dataloaders, load_subject_ids
+from src.project.data import (
+    build_dataloaders,
+    build_test_dataloader,
+    infer_classes_from_data,
+    load_subject_ids,
+)
 from src.project.training.module import build_lightning_module, compute_class_weights
 from src.project.training.trainer import build_trainer
 
@@ -18,8 +23,6 @@ def resolve_repo_root() -> Path:
 
 
 def run_training(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg))
-
     try:
         import lightning.pytorch as pl
     except Exception as exc:  # pragma: no cover
@@ -28,10 +31,21 @@ def run_training(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.seed, workers=True)
 
     repo_root = resolve_repo_root()
+    inferred_classes = infer_classes_from_data(cfg, repo_root)
+    with open_dict(cfg):
+        cfg.data.classes = inferred_classes
+        cfg.model.num_classes = len(inferred_classes)
+    print(OmegaConf.to_yaml(cfg))
+    print(f"Inferred classes from data: {inferred_classes}")
+
     ckpt_dir = repo_root / cfg.checkpoint.dir
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    use_validation = bool(getattr(cfg.data, "use_validation", True))
+
     train_subject_ids, val_subject_ids = load_subject_ids(cfg, repo_root)
+    if not use_validation:
+        val_subject_ids = None
     train_loader, val_loader = build_dataloaders(
         cfg,
         repo_root,
@@ -63,8 +77,18 @@ def run_training(cfg: DictConfig) -> None:
         print(f"Class weights: {class_weights.tolist()}")
 
     model = build_lightning_module(cfg, class_weights=class_weights)
-    trainer = build_trainer(cfg, ckpt_dir)
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    trainer = build_trainer(cfg, ckpt_dir, use_validation=use_validation and val_loader is not None)
+    if use_validation and val_loader is not None:
+        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        test_ckpt = "best"
+    else:
+        print("Running training without validation.")
+        trainer.fit(model, train_dataloaders=train_loader)
+        test_ckpt = "last"
+
+    test_loader = build_test_dataloader(cfg, repo_root)
+    print(f"\nRunning test with checkpoint: {test_ckpt}")
+    trainer.test(model=model, dataloaders=test_loader, ckpt_path=test_ckpt)
 
 
 @hydra.main(config_path="../../../configs", config_name="train", version_base=None)
@@ -74,4 +98,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-

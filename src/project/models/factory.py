@@ -51,6 +51,7 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "slice_transformer_attn_dropout": float(
                     getattr(cfg.model, "slice_transformer_attn_dropout", 0.0)
                 ),
+                "attn_init": bool(getattr(cfg.model, "attn_init", False)),
                 "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
@@ -113,6 +114,7 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "slice_transformer_attn_dropout": float(
                     getattr(cfg.model, "slice_transformer_attn_dropout", 0.0)
                 ),
+                "attn_init": bool(getattr(cfg.model, "attn_init", False)),
                 "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),

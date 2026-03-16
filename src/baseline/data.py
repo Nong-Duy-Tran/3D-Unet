@@ -532,7 +532,7 @@ class MRIVolumeJPG25DDataset(Dataset):
         return volume
 
 
-def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
+def get_dataloaders(train_dir, val_dir=None, batch_size=4, num_workers=4,
                    target_shape=(64, 64, 64),
                    weighted_sampler=False, use_2d=False,
                    num_slices=8, slice_axis=0, resize_2d=None,
@@ -554,7 +554,7 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
     
     Args:
         train_dir: Training data directory
-        val_dir: Validation data directory
+        val_dir: Validation data directory (optional)
         batch_size: Batch size
         num_workers: Number of workers
         target_shape: Target MRI shape
@@ -626,13 +626,15 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             subject_ids=train_subject_ids,
             **common_kwargs,
         )
-        val_dataset = dataset_cls(
-            val_dir,
-            slice_strategy=slice_strategy_val,
-            augment=False,
-            subject_ids=val_subject_ids,
-            **common_kwargs,
-        )
+        val_dataset = None
+        if val_dir is not None:
+            val_dataset = dataset_cls(
+                val_dir,
+                slice_strategy=slice_strategy_val,
+                augment=False,
+                subject_ids=val_subject_ids,
+                **common_kwargs,
+            )
     else:
         train_dataset = MRIClassificationDataset(
             train_dir,
@@ -650,22 +652,24 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
             class_map=class_map,
             subject_ids=train_subject_ids,
         )
-        val_dataset = MRIClassificationDataset(
-            val_dir,
-            target_shape,
-            augment=False,
-            normalize=normalize,
-            use_2d=use_2d,
-            num_slices=num_slices,
-            slice_axis=slice_axis,
-            slice_strategy=slice_strategy_val,
-            resize_2d=resize_2d,
-            transform_2d=transform_2d_val,
-            rgb_mode=rgb_mode,
-            classes=classes,
-            class_map=class_map,
-            subject_ids=val_subject_ids,
-        )
+        val_dataset = None
+        if val_dir is not None:
+            val_dataset = MRIClassificationDataset(
+                val_dir,
+                target_shape,
+                augment=False,
+                normalize=normalize,
+                use_2d=use_2d,
+                num_slices=num_slices,
+                slice_axis=slice_axis,
+                slice_strategy=slice_strategy_val,
+                resize_2d=resize_2d,
+                transform_2d=transform_2d_val,
+                rgb_mode=rgb_mode,
+                classes=classes,
+                class_map=class_map,
+                subject_ids=val_subject_ids,
+            )
     
     sampler = None
     shuffle = True
@@ -693,14 +697,16 @@ def get_dataloaders(train_dir, val_dir, batch_size=4, num_workers=4,
         pin_memory=True
     )
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    )
-    
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True
+        )
+
     return train_loader, val_loader
 
 

@@ -74,6 +74,9 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             self._val_preds: list[torch.Tensor] = []
             self._val_targets: list[torch.Tensor] = []
             self._val_probs: list[torch.Tensor] = []
+            self._test_preds: list[torch.Tensor] = []
+            self._test_targets: list[torch.Tensor] = []
+            self._test_probs: list[torch.Tensor] = []
 
         def train(self, mode: bool = True):
             super().train(mode)
@@ -146,17 +149,23 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             self._val_targets = []
             self._val_probs = []
 
-        def on_validation_epoch_end(self) -> None:
-            if not self._val_preds:
+        def _epoch_end_metrics(
+            self,
+            stage: str,
+            preds_list: list[torch.Tensor],
+            targets_list: list[torch.Tensor],
+            probs_list: list[torch.Tensor],
+        ) -> None:
+            if not preds_list:
                 return
             try:
                 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
             except Exception:
                 return
 
-            preds = torch.cat(self._val_preds).numpy()
-            targets = torch.cat(self._val_targets).numpy()
-            probs = torch.cat(self._val_probs).numpy() if self._val_probs else None
+            preds = torch.cat(preds_list).numpy()
+            targets = torch.cat(targets_list).numpy()
+            probs = torch.cat(probs_list).numpy() if probs_list else None
 
             precision = precision_score(targets, preds, zero_division=0, average="macro")
             recall = recall_score(targets, preds, zero_division=0, average="macro")
@@ -171,23 +180,46 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 auc_epoch = 0.0
             cm = confusion_matrix(targets, preds, labels=list(range(int(probs.shape[1])))) if probs is not None else None
 
-            self.log("val/acc_epoch", acc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-            self.log("val/precision", precision, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-            self.log("val/recall", recall, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-            self.log("val/f1_epoch", f1_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
-            self.log("val/auc_epoch", auc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/acc_epoch", acc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/precision", precision, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/recall", recall, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/f1_epoch", f1_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/auc_epoch", auc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             if cm is None:
                 return
             for i in range(cm.shape[0]):
                 for j in range(cm.shape[1]):
                     self.log(
-                        f"val/cm_{i}{j}",
+                        f"{stage}/cm_{i}{j}",
                         float(cm[i, j]),
                         prog_bar=False,
                         on_step=False,
                         on_epoch=True,
                         sync_dist=True,
                     )
+
+        def on_validation_epoch_end(self) -> None:
+            self._epoch_end_metrics("val", self._val_preds, self._val_targets, self._val_probs)
+
+        def test_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
+            x, y = batch
+            logits = self.forward(x)
+            loss = self.loss_fn(logits, y)
+            probs = torch.softmax(logits, dim=1)
+            preds = logits.argmax(dim=1)
+            self.log("test/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self._test_preds.append(preds.detach().cpu())
+            self._test_targets.append(y.detach().cpu())
+            self._test_probs.append(probs.detach().cpu())
+            return loss
+
+        def on_test_epoch_start(self) -> None:
+            self._test_preds = []
+            self._test_targets = []
+            self._test_probs = []
+
+        def on_test_epoch_end(self) -> None:
+            self._epoch_end_metrics("test", self._test_preds, self._test_targets, self._test_probs)
 
         def configure_optimizers(self):
             optimizer_cfg = getattr(self.cfg.training, "optimizer", None)
@@ -278,4 +310,3 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             }
 
     return LitClassifier(cfg, class_weights_in=class_weights)
-

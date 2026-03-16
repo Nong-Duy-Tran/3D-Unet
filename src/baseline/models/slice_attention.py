@@ -100,9 +100,11 @@ class SliceSelfAttentionEncoder(nn.Module):
         mlp_ratio: float = 4.0,
         dropout: float = 0.0,
         attn_dropout: float = 0.0,
+        attn_init: bool = False,
     ):
         super().__init__()
         self.mode = mode.lower()
+        self.attn_init = bool(attn_init)
         if self.mode == "none":
             self.encoder = nn.Identity()
             return
@@ -129,7 +131,35 @@ class SliceSelfAttentionEncoder(nn.Module):
             layer.self_attn.dropout = float(attn_dropout)
         self.encoder = nn.TransformerEncoder(layer, num_layers=depth)
 
+    @staticmethod
+    def _build_center_prior_mask(
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if seq_len <= 0:
+            raise ValueError("seq_len must be > 0")
+
+        pos = torch.arange(seq_len, device=device, dtype=torch.float32)
+        center = float(seq_len - 1) / 2.0
+        sigma = max(float(seq_len) / 6.0, 1.0)
+        prior = torch.exp(-0.5 * ((pos - center) / sigma) ** 2)
+        prior = prior / prior.sum().clamp_min(1e-8)
+
+        # Add a soft bias toward center keys for every query position.
+        prior_logits = 0.2 * torch.log(prior.clamp_min(1e-8))
+        return prior_logits.unsqueeze(0).expand(seq_len, seq_len).to(dtype=dtype)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 3:
             raise ValueError(f"Expected 3D tensor (B, N, D), got shape={tuple(x.shape)}")
-        return self.encoder(x)
+        if not self.attn_init or self.mode != "self_attention":
+            return self.encoder(x)
+
+        seq_len = x.shape[1]
+        attn_mask = self._build_center_prior_mask(
+            seq_len=seq_len,
+            device=x.device,
+            dtype=x.dtype,
+        )
+        return self.encoder(x, mask=attn_mask)

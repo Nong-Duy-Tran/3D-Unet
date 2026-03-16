@@ -1,13 +1,14 @@
 """
-3D MRI preprocessing pipeline for OASIS v2.
+3D MRI preprocessing pipeline for OASIS v3.
 
 Version policy:
   - v1: voxel-wise nonblank crop
   - v2: slice-energy crop
+  - v3: foreground mask + largest connected component + bbox
 
 Stage 1 - Cache:
   load .img -> reorient RAS+ -> N4 bias correction -> optional skull-strip ->
-  resample 1 mm iso -> crop by slice energy -> .nii.gz
+  resample 1 mm iso -> crop by 3D largest connected component -> .nii.gz
 
 Stage 2 - Split metadata:
   create standard 5-fold CV metadata only (train/test) using StratifiedGroupKFold.
@@ -29,6 +30,7 @@ import pandas as pd
 import nibabel as nib
 from nibabel.processing import resample_to_output
 from sklearn.model_selection import StratifiedGroupKFold
+from scipy import ndimage
 from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -450,46 +452,42 @@ def crop_nonblank_3d(
     return nib.Nifti1Image(cropped, new_affine, img.header)
 
 
-def crop_by_slice_energy_3d(
+def crop_largest_connected_component_3d(
     img: nib.Nifti1Image,
-    energy_ratio: float = 1e-3,
-    min_energy: float = 1e-6,
+    threshold: float = 1e-5,
 ) -> nib.Nifti1Image:
     """
-    Crop volume by selecting the tightest 3D box whose slices carry enough
-    aggregate energy along each axis.
-
-    This is more robust to isolated noisy voxels than voxel-wise nonblank crop,
-    because a few outlier voxels outside the brain contribute very little slice
-    energy and are therefore ignored.
+    Crop volume by keeping only the largest connected 3D foreground component.
 
     Args:
         img: nibabel image
-        energy_ratio: keep slices whose energy >= energy_ratio * max_axis_energy
-        min_energy: absolute floor to avoid zero thresholds on degenerate inputs
+        threshold: absolute-value threshold used to define foreground
     """
     data = np.asarray(img.get_fdata(dtype=np.float32))
-    energy_ratio = float(max(0.0, energy_ratio))
-    min_energy = float(max(0.0, min_energy))
-
-    abs_data = np.abs(data)
-    if not np.isfinite(abs_data).any():
+    finite_mask = np.isfinite(data)
+    if not finite_mask.any():
         return img
-    abs_data = np.where(np.isfinite(abs_data), abs_data, 0.0)
 
-    def _bounds(energies: np.ndarray) -> tuple[int, int]:
-        if energies.size == 0:
-            return 0, 0
-        max_energy = float(np.max(energies))
-        threshold = max(min_energy, energy_ratio * max_energy)
-        keep = np.flatnonzero(energies >= threshold)
-        if keep.size == 0:
-            return 0, energies.shape[0]
-        return int(keep[0]), int(keep[-1]) + 1
+    foreground = finite_mask & (np.abs(data) > float(max(0.0, threshold)))
+    if not foreground.any():
+        return img
 
-    x_min, x_max = _bounds(abs_data.sum(axis=(1, 2)))
-    y_min, y_max = _bounds(abs_data.sum(axis=(0, 2)))
-    z_min, z_max = _bounds(abs_data.sum(axis=(0, 1)))
+    structure = np.ones((3, 3, 3), dtype=np.uint8)
+    labeled, num_labels = ndimage.label(foreground, structure=structure)
+    if num_labels <= 1:
+        keep_mask = foreground
+    else:
+        component_sizes = ndimage.sum(
+            np.ones_like(labeled, dtype=np.int64),
+            labeled,
+            index=np.arange(1, num_labels + 1),
+        )
+        largest_label = int(np.argmax(component_sizes)) + 1
+        keep_mask = labeled == largest_label
+
+    coords = np.argwhere(keep_mask)
+    x_min, y_min, z_min = coords.min(axis=0)
+    x_max, y_max, z_max = coords.max(axis=0) + 1
 
     cropped = data[x_min:x_max, y_min:y_max, z_min:z_max]
 
@@ -512,7 +510,7 @@ def preprocess_volume(
       3. N4 bias correction
       4. Skull stripping via HD-BET (if enabled)
       5. Resample to isotropic 1 mm
-      6. Crop by slice-energy 3D bounding box
+      6. Crop by 3D largest connected foreground component
 
     Returns a preprocessed nibabel image ready to save as .nii.gz.
     """
@@ -536,8 +534,8 @@ def preprocess_volume(
     # 5. Resample to 1 mm isotropic
     img = resample_isotropic(img, voxel_mm=1.0)
 
-    # 6. Crop by slice energy to avoid noisy outlier voxels expanding the box
-    img = crop_by_slice_energy_3d(img)
+    # 6. Keep only the largest 3D foreground component before cropping.
+    img = crop_largest_connected_component_3d(img)
 
     return img
 
@@ -674,7 +672,7 @@ def save_fold_metadata(
 
 def main(args: argparse.Namespace) -> None:
     print("=" * 70)
-    print("OASIS 3D MRI Preprocessing Pipeline (v2: energy crop)")
+    print("OASIS 3D MRI Preprocessing Pipeline (v3: LCC crop)")
     print("=" * 70)
 
     oasis_dir = Path(args.oasis_dir)
@@ -781,7 +779,7 @@ def main(args: argparse.Namespace) -> None:
     print("Next steps")
     print("=" * 70)
     print("\n1. Export 2D slices from cache + split_info:")
-    print("   python src/data/v2/postprocess_oasis_data.py --input_dir <output_dir> --output_dir <2d_output_dir>")
+    print("   python src/data/v3/postprocess_oasis_data.py --input_dir <output_dir> --output_dir <2d_output_dir>")
     print("\n2. Point training configs to fold_{k}/train and fold_{k}/test.")
     print("   If fold_{k}/val does not exist, the training code will create an internal validation split from train/.")
 
@@ -792,7 +790,7 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Preprocess OASIS 3D MRI data with grouped 5-fold CV metadata",
+        description="Preprocess OASIS v3 3D MRI data with grouped 5-fold CV metadata",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -801,7 +799,7 @@ if __name__ == "__main__":
         help="Root OASIS directory containing disc1, disc2, … sub-folders",
     )
     parser.add_argument(
-        "--output_dir", type=str, default="./data/processed_oasis_3d_cv5_v2",
+        "--output_dir", type=str, default="./data/processed_oasis_3d_cv5_v3",
         help="Output directory for processed data",
     )
     parser.add_argument(

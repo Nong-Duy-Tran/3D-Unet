@@ -5,6 +5,10 @@ data:
   fold_index: 0
   train_dir: "data/processed_oasis_2d_cv5/axial/fold_${data.fold_index}/train"
   val_dir: "data/processed_oasis_2d_cv5/axial/fold_${data.fold_index}/val"
+  test_dir: "data/processed_oasis_2d_cv5/axial/fold_${data.fold_index}/test"
+  use_validation: true
+  internal_val_ratio: 0.2
+  internal_val_seed: 42
   classes: [normal, alzheimer]
   jpg_view: axial
   jpg_mode: 2p5d

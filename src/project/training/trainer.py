@@ -5,7 +5,7 @@ from pathlib import Path
 from omegaconf import DictConfig
 
 
-def build_trainer(cfg: DictConfig, ckpt_dir: Path):
+def build_trainer(cfg: DictConfig, ckpt_dir: Path, use_validation: bool = True):
     try:
         import lightning.pytorch as pl
         from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, TQDMProgressBar
@@ -13,18 +13,29 @@ def build_trainer(cfg: DictConfig, ckpt_dir: Path):
     except Exception as exc:  # pragma: no cover
         raise ImportError("lightning is required. Install it, then run again.") from exc
 
-    callbacks = [
-        TQDMProgressBar(refresh_rate=10, leave=False),
-        ModelCheckpoint(
-            dirpath=str(ckpt_dir),
-            filename="baseline-{epoch:03d}",
-            monitor=cfg.checkpoint.monitor,
-            mode=cfg.checkpoint.mode,
-            save_top_k=1,
-            save_last=True,
-        ),
-    ]
-    if getattr(cfg.training, "early_stopping", None) and cfg.training.early_stopping.enabled:
+    callbacks = [TQDMProgressBar(refresh_rate=10, leave=False)]
+    if use_validation:
+        callbacks.append(
+            ModelCheckpoint(
+                dirpath=str(ckpt_dir),
+                filename="baseline-{epoch:03d}",
+                monitor=cfg.checkpoint.monitor,
+                mode=cfg.checkpoint.mode,
+                save_top_k=1,
+                save_last=True,
+            )
+        )
+    else:
+        callbacks.append(
+            ModelCheckpoint(
+                dirpath=str(ckpt_dir),
+                filename="baseline-{epoch:03d}",
+                save_top_k=0,
+                save_last=True,
+            )
+        )
+
+    if use_validation and getattr(cfg.training, "early_stopping", None) and cfg.training.early_stopping.enabled:
         callbacks.append(
             EarlyStopping(
                 monitor=cfg.training.early_stopping.monitor,
@@ -62,4 +73,3 @@ def build_trainer(cfg: DictConfig, ckpt_dir: Path):
     if accumulate is not None:
         trainer_kwargs["accumulate_grad_batches"] = int(accumulate)
     return pl.Trainer(**trainer_kwargs)
-

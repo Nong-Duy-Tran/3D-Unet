@@ -31,6 +31,7 @@ class VGG25DClassifier(nn.Module):
         slice_transformer_mlp_ratio: float = 4.0,
         slice_transformer_dropout: float = 0.0,
         slice_transformer_attn_dropout: float = 0.0,
+        attn_init: bool = False,
         slice_attn_hidden_dim: int | None = None,
         slice_attn_dropout: float = 0.0,
         slice_attn_activation: str = "tanh",
@@ -69,6 +70,7 @@ class VGG25DClassifier(nn.Module):
             mlp_ratio=slice_transformer_mlp_ratio,
             dropout=slice_transformer_dropout,
             attn_dropout=slice_transformer_attn_dropout,
+            attn_init=attn_init,
         )
         self.pool = SliceAttentionPool(
             sequence_dim,
@@ -206,6 +208,7 @@ def default_config():
         "slice_transformer_mlp_ratio": 4.0,
         "slice_transformer_dropout": 0.0,
         "slice_transformer_attn_dropout": 0.0,
+        "attn_init": False,
         "slice_attn_hidden_dim": None,
         "slice_attn_dropout": 0.0,
         "slice_attn_activation": "tanh",

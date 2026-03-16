@@ -1,20 +1,23 @@
 """
-Create oriented 2D JPG slices from N4 + WhiteStripe normalized OASIS NIfTI volumes.
+Create oriented 2D JPG slices from preprocessed OASIS NIfTI volumes.
 
-Input layout (from v2/preprocess_oasis_data.py):
-  <input_dir>/fold_<k>/{train,val,test}/{normal,alzheimer}/*.nii.gz
+Input layout (from preprocess_oasis_data.py):
+  <input_dir>/_cache/*.nii.gz
+  <input_dir>/split_info/folds.json
 
 Output layout:
-  <output_dir>/{coronal,axial,sagittal}/fold_<k>/{train,val,test}/{normal,alzheimer}/*.jpg
+  <output_dir>/{coronal,axial,sagittal}/fold_<k>/{train,test}/{class_name}/*.jpg
 
-Display convention baked into exported slices:
-  - coronal (axis 0): rot180
-  - axial (axis 1): unchanged
-  - sagittal (axis 2): rot90 counter-clockwise
+Export convention for downstream 2D data, aligned to the current on-disk
+preprocessed volumes:
+  - export coronal  from source axis 0 -> rot180
+  - export axial    from source axis 1 -> rot180
+  - export sagittal from source axis 2 -> rot90 counter-clockwise
 """
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import nibabel as nib
@@ -22,11 +25,11 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-AXIS_NAMES: dict[int, str] = {
-    0: "coronal",
-    1: "axial",
-    2: "sagittal",
-}
+EXPORT_VIEWS: tuple[dict[str, int | str], ...] = (
+    {"name": "coronal", "source_axis": 0, "rotation_k": 2},
+    {"name": "axial", "source_axis": 1, "rotation_k": 2},
+    {"name": "sagittal", "source_axis": 2, "rotation_k": 1},
+)
 
 
 def _subject_id_from_filename(filename: str) -> str:
@@ -37,36 +40,33 @@ def _subject_id_from_filename(filename: str) -> str:
     return Path(filename).stem
 
 
-def _extract_slice(volume: np.ndarray, axis: int, idx: int) -> np.ndarray:
-    if axis == 0:
+def _extract_slice(volume: np.ndarray, source_axis: int, idx: int) -> np.ndarray:
+    if source_axis == 0:
         return volume[idx, :, :]
-    if axis == 1:
+    if source_axis == 1:
         return volume[:, idx, :]
     return volume[:, :, idx]
 
 
-def _orient_slice_for_export(slice_2d: np.ndarray, axis: int) -> np.ndarray:
-    if axis == 0:
-        return np.rot90(slice_2d, 2)
-    if axis == 2:
-        return np.rot90(slice_2d, 1)
-    return slice_2d
+def _orient_slice_for_export(slice_2d: np.ndarray, rotation_k: int) -> np.ndarray:
+    rotation_k = int(rotation_k) % 4
+    if rotation_k == 0:
+        return slice_2d
+    return np.rot90(slice_2d, rotation_k)
 
 
-def _normalized_slice_to_uint8(
-    slice_2d: np.ndarray,
-    clip_min: float,
-    clip_max: float,
-) -> np.ndarray:
+def _to_uint8(slice_2d: np.ndarray) -> np.ndarray:
     arr = np.asarray(slice_2d, dtype=np.float32)
     finite = np.isfinite(arr)
     if not finite.any():
         return np.zeros(arr.shape, dtype=np.uint8)
     arr = np.where(finite, arr, 0.0)
-    if clip_max <= clip_min:
-        raise ValueError("clip_max must be greater than clip_min")
-    arr = np.clip(arr, clip_min, clip_max)
-    arr = (arr - clip_min) / (clip_max - clip_min)
+    vmin = float(arr.min())
+    vmax = float(arr.max())
+    if vmax > vmin:
+        arr = (arr - vmin) / (vmax - vmin)
+    else:
+        arr = np.zeros_like(arr, dtype=np.float32)
     return (arr * 255.0).clip(0, 255).astype(np.uint8)
 
 
@@ -95,6 +95,24 @@ def _center_pad_or_crop(
 
 
 def _iter_nifti_samples(input_dir: Path):
+    split_file = input_dir / "split_info" / "folds.json"
+    cache_dir = input_dir / "_cache"
+
+    if split_file.exists() and cache_dir.exists():
+        with split_file.open("r", encoding="utf-8") as handle:
+            split_data = json.load(handle)
+        for fold in split_data.get("folds", []):
+            fold_name = f"fold_{int(fold['fold_index'])}"
+            for split_name in ("train", "test"):
+                for item in fold.get(split_name, []):
+                    session_id = str(item["session_id"])
+                    class_name = str(item["class_name"])
+                    nii_path = cache_dir / f"{session_id}.nii.gz"
+                    if nii_path.exists():
+                        yield fold_name, split_name, class_name, nii_path
+        return
+
+    # Backward-compatible fallback for old materialized fold directories.
     fold_dirs = sorted([p for p in input_dir.glob("fold_*") if p.is_dir()])
     if not fold_dirs:
         fold_dirs = [input_dir]
@@ -113,19 +131,19 @@ def _iter_nifti_samples(input_dir: Path):
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Create oriented, center-padded JPG slices from N4 + WhiteStripe normalized OASIS NIfTI volumes.",
+        description="Create oriented, center-padded JPG slices from preprocessed OASIS NIfTI volumes.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--input_dir",
         type=str,
-        default="data/processed_oasis_3d_cv5_n4",
+        default="data/processed_oasis_3d_cv5_v2",
         help="Directory containing preprocessed folds with NIfTI files.",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="data/processed_oasis_2d_cv5_n4",
+        default="data/processed_oasis_2d_cv5_v2",
         help="Directory to write oriented, padded JPG slices.",
     )
     parser.add_argument(
@@ -165,18 +183,6 @@ def main() -> None:
         help="JPEG quality when saving slices.",
     )
     parser.add_argument(
-        "--clip_min",
-        type=float,
-        default=-5.0,
-        help="Lower bound in normalized intensity space before mapping to uint8.",
-    )
-    parser.add_argument(
-        "--clip_max",
-        type=float,
-        default=5.0,
-        help="Upper bound in normalized intensity space before mapping to uint8.",
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing slice files.",
@@ -200,8 +206,6 @@ def main() -> None:
         raise ValueError("Require 0.0 <= --slice_ratio_start < --slice_ratio_end <= 1.0")
     if not (0 <= args.pad_value <= 255):
         raise ValueError("--pad_value must be in [0, 255]")
-    if args.clip_max <= args.clip_min:
-        raise ValueError("--clip_max must be greater than --clip_min")
 
     samples = list(_iter_nifti_samples(input_dir))
     if not samples:
@@ -220,9 +224,11 @@ def main() -> None:
 
         subject_id = _subject_id_from_filename(nii_path.name)
 
-        for axis in (0, 1, 2):
-            axis_name = AXIS_NAMES[axis]
-            axis_len = int(volume.shape[axis])
+        for view in EXPORT_VIEWS:
+            axis_name = str(view["name"])
+            source_axis = int(view["source_axis"])
+            rotation_k = int(view["rotation_k"])
+            axis_len = int(volume.shape[source_axis])
             start = int(axis_len * args.slice_ratio_start)
             end = int(axis_len * args.slice_ratio_end)
             start = max(0, min(start, axis_len))
@@ -236,13 +242,9 @@ def main() -> None:
                     skipped += 1
                     continue
 
-                slice_2d = _extract_slice(volume, axis, idx)
-                slice_2d = _orient_slice_for_export(slice_2d, axis)
-                slice_u8 = _normalized_slice_to_uint8(
-                    slice_2d,
-                    clip_min=args.clip_min,
-                    clip_max=args.clip_max,
-                )
+                slice_2d = _extract_slice(volume, source_axis, idx)
+                slice_2d = _orient_slice_for_export(slice_2d, rotation_k)
+                slice_u8 = _to_uint8(slice_2d)
                 padded = _center_pad_or_crop(
                     slice_u8,
                     target_h=args.target_size,
