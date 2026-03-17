@@ -74,6 +74,9 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             self._val_preds: list[torch.Tensor] = []
             self._val_targets: list[torch.Tensor] = []
             self._val_probs: list[torch.Tensor] = []
+            self._train_preds: list[torch.Tensor] = []
+            self._train_targets: list[torch.Tensor] = []
+            self._train_probs: list[torch.Tensor] = []
             self._test_preds: list[torch.Tensor] = []
             self._test_targets: list[torch.Tensor] = []
             self._test_probs: list[torch.Tensor] = []
@@ -113,6 +116,25 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 return None
             return float(roc_auc_score(y_true, y_score))
 
+        def _specificity_from_confusion_matrix(self, cm: Any) -> float:
+            cm = torch.as_tensor(cm, dtype=torch.float32)
+            total = cm.sum()
+            if total <= 0:
+                return 0.0
+
+            specificities: list[float] = []
+            for i in range(cm.shape[0]):
+                tp = cm[i, i]
+                fp = cm[:, i].sum() - tp
+                fn = cm[i, :].sum() - tp
+                tn = total - tp - fp - fn
+                denom = tn + fp
+                if denom <= 0:
+                    specificities.append(0.0)
+                else:
+                    specificities.append(float((tn / denom).item()))
+            return float(sum(specificities) / len(specificities))
+
         def _shared_step(self, batch: Any, stage: str) -> STEP_OUTPUT:
             x, y = batch
             logits = self.forward(x)
@@ -130,7 +152,28 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             return loss
 
         def training_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
-            return self._shared_step(batch, stage="train")
+            x, y = batch
+            logits = self.forward(x)
+            loss = self.loss_fn(logits, y)
+            probs = torch.softmax(logits, dim=1)
+            preds = logits.argmax(dim=1)
+            acc = (preds == y).float().mean()
+            f1 = self._batch_f1(preds, y)
+            auc = self._batch_auc(probs, y)
+            self.log("train/loss", loss, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("train/acc", acc, prog_bar=True, on_step=False, on_epoch=True, sync_dist=True)
+            self.log("train/f1", f1, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            if auc is not None:
+                self.log("train/auc", auc, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self._train_preds.append(preds.detach().cpu())
+            self._train_targets.append(y.detach().cpu())
+            self._train_probs.append(probs.detach().cpu())
+            return loss
+
+        def on_train_epoch_start(self) -> None:
+            self._train_preds = []
+            self._train_targets = []
+            self._train_probs = []
 
         def validation_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
             x, y = batch
@@ -179,10 +222,12 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             else:
                 auc_epoch = 0.0
             cm = confusion_matrix(targets, preds, labels=list(range(int(probs.shape[1])))) if probs is not None else None
+            specificity = self._specificity_from_confusion_matrix(cm) if cm is not None else 0.0
 
             self.log(f"{stage}/acc_epoch", acc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log(f"{stage}/precision", precision, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log(f"{stage}/recall", recall, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+            self.log(f"{stage}/specificity", specificity, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log(f"{stage}/f1_epoch", f1_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             self.log(f"{stage}/auc_epoch", auc_epoch, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
             if cm is None:
@@ -200,6 +245,9 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
         def on_validation_epoch_end(self) -> None:
             self._epoch_end_metrics("val", self._val_preds, self._val_targets, self._val_probs)
+
+        def on_train_epoch_end(self) -> None:
+            self._epoch_end_metrics("train", self._train_preds, self._train_targets, self._train_probs)
 
         def test_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
             x, y = batch

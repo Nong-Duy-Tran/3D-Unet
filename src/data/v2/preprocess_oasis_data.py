@@ -85,7 +85,7 @@ def _visit_id_from_session_id(session_id: str) -> str:
 
 def find_all_oasis_sessions(
     oasis_root: str | Path,
-    label_mode: str = "normal_vs_nonnormal",
+    label_mode: str = "normal_vs_abnormal",
     verbose: bool = False,
 ) -> list[dict]:
     """
@@ -815,7 +815,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--label_mode",
         type=str,
-        default="normal_vs_nonnormal",
+        default="normal_vs_abnormal",
         choices=VALID_LABEL_MODES,
         help="CDR-to-label mapping used for split metadata and exported class folders",
     )

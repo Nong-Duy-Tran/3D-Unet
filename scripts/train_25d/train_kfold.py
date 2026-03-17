@@ -17,7 +17,9 @@ def main() -> int:
         default_config_name="train_25d_oasis",
         description="Run 2.5D k-fold training sequentially.",
     )
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        args.override.extend(unknown)
     return run_kfold(args, repo_root)
 
 

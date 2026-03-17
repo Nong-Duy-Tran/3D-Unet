@@ -4,7 +4,7 @@ from typing import Final
 
 VALID_LABEL_MODES: Final[tuple[str, ...]] = (
     "cdr4",
-    "normal_vs_nonnormal",
+    "normal_vs_abnormal",
     "ad_vs_nonad",
     "cn_vs_ad_drop_05",
 )
@@ -18,8 +18,8 @@ def get_class_names(label_mode: str) -> list[str]:
     mode = str(label_mode)
     if mode == "cdr4":
         return ["cdr_0", "cdr_0p5", "cdr_1", "cdr_2"]
-    if mode == "normal_vs_nonnormal":
-        return ["normal", "nonnormal"]
+    if mode == "normal_vs_abnormal":
+        return ["normal", "abnormal"]
     if mode == "ad_vs_nonad":
         return ["nonad", "ad"]
     if mode == "cn_vs_ad_drop_05":
@@ -47,11 +47,11 @@ def build_label(cdr: float, label_mode: str) -> tuple[int, str] | None:
         }
         return mapping.get(cdr_value)
 
-    if mode == "normal_vs_nonnormal":
+    if mode == "normal_vs_abnormal":
         if cdr_value == 0.0:
             return 0, "normal"
         if cdr_value in (0.5, 1.0, 2.0):
-            return 1, "nonnormal"
+            return 1, "abnormal"
         return None
 
     if mode == "ad_vs_nonad":

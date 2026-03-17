@@ -49,12 +49,18 @@ def build_trainer(cfg: DictConfig, ckpt_dir: Path, use_validation: bool = True):
     logger = None
     if cfg.logging.wandb.enabled:
         try:
-            logger = WandbLogger(
+            logger_kwargs = dict(
                 project=cfg.logging.wandb.project,
                 name=cfg.logging.wandb.name,
                 tags=list(cfg.logging.wandb.tags),
                 save_dir=str(ckpt_dir),
                 log_model=False,
+            )
+            wandb_group = getattr(cfg.logging.wandb, "group", None)
+            if wandb_group:
+                logger_kwargs["group"] = str(wandb_group)
+            logger = WandbLogger(
+                **logger_kwargs,
             )
         except Exception as exc:  # pragma: no cover
             raise ImportError("wandb is required when logging.wandb.enabled=true") from exc

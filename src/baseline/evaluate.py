@@ -8,13 +8,30 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
-    f1_score, roc_auc_score, classification_report
+    f1_score, roc_auc_score, classification_report, confusion_matrix
 )
 
 from src.baseline.models import get_model
 from src.baseline.data import get_dataloaders
 from src.utils.plots import plot_confusion_matrix, plot_roc_curve
 from src.utils.checkpoint import load_checkpoint
+
+
+def specificity_score(y_true, y_pred):
+    cm = confusion_matrix(y_true, y_pred)
+    total = cm.sum()
+    if total <= 0:
+        return 0.0
+
+    specificities = []
+    for i in range(cm.shape[0]):
+        tp = cm[i, i]
+        fp = cm[:, i].sum() - tp
+        fn = cm[i, :].sum() - tp
+        tn = total - tp - fp - fn
+        denom = tn + fp
+        specificities.append(float(tn / denom) if denom > 0 else 0.0)
+    return float(sum(specificities) / len(specificities))
 
 
 def evaluate_model(model, dataloader, device):
@@ -57,7 +74,8 @@ def evaluate_model(model, dataloader, device):
         'precision': precision,
         'recall': recall,
         'f1': f1,
-        'auc': auc
+        'auc': auc,
+        'specificity': specificity_score(all_labels, all_preds),
     }
     
     print("\n" + "=" * 60)
@@ -66,6 +84,7 @@ def evaluate_model(model, dataloader, device):
     print(f"Accuracy:  {metrics['accuracy']:.4f}")
     print(f"Precision: {metrics['precision']:.4f}")
     print(f"Recall:    {metrics['recall']:.4f}")
+    print(f"Specificity: {metrics['specificity']:.4f}")
     print(f"F1-Score:  {metrics['f1']:.4f}")
     print(f"AUC-ROC:   {metrics['auc']:.4f}")
     print("=" * 60)
