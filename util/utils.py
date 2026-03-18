@@ -9,8 +9,14 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
 
 
-def save_checkpoint(model, optimizer, epoch, best_val_acc, filepath):
-    """Save model checkpoint"""
+def save_checkpoint(model, optimizer, epoch, best_val_acc, filepath,
+                    best_val_loss=None, best_val_auc=None):
+    """Save model checkpoint.
+
+    The historical argument name `best_val_acc` is preserved for backward
+    compatibility with existing callers. Additional metrics can be optionally
+    stored when available.
+    """
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     
     checkpoint = {
@@ -19,6 +25,11 @@ def save_checkpoint(model, optimizer, epoch, best_val_acc, filepath):
         'optimizer_state_dict': optimizer.state_dict(),
         'best_val_acc': best_val_acc
     }
+
+    if best_val_loss is not None:
+        checkpoint['best_val_loss'] = best_val_loss
+    if best_val_auc is not None:
+        checkpoint['best_val_auc'] = best_val_auc
     
     torch.save(checkpoint, filepath)
     print(f"Checkpoint saved to {filepath}")
@@ -31,12 +42,20 @@ def load_checkpoint(model, optimizer, filepath, device='cuda'):
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['best_val_loss']
+    best_val_loss = checkpoint.get('best_val_loss', None)
+    best_val_acc = checkpoint.get('best_val_acc', None)
     
     print(f"Checkpoint loaded from {filepath}")
-    print(f"Epoch: {epoch}, Best val loss: {best_val_loss:.4f}")
-    
-    return epoch, best_val_loss
+    if best_val_loss is not None:
+        print(f"Epoch: {epoch}, Best val loss: {best_val_loss:.4f}")
+        return epoch, best_val_loss
+
+    if best_val_acc is not None:
+        print(f"Epoch: {epoch}, Best val acc: {best_val_acc:.4f}")
+        return epoch, best_val_acc
+
+    print(f"Epoch: {epoch}")
+    return epoch, None
 
 
 def plot_confusion_matrix(y_true, y_pred, classes=['Normal', 'Alzheimer'], save_path=None):

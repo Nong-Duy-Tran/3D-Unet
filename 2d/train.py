@@ -253,6 +253,7 @@ def main(args, fold):
     
     # Load checkpoint if specified
     start_epoch = 0
+    best_val_loss = float('inf')
     best_val_acc = 0.0
     best_val_auc = 0.0
     
@@ -264,9 +265,13 @@ def main(args, fold):
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             start_epoch = checkpoint.get('epoch', 0)
+            best_val_loss = checkpoint.get('best_val_loss', float('inf'))
             best_val_acc = checkpoint.get('best_val_acc', 0.0)
             best_val_auc = checkpoint.get('best_val_auc', 0.0)
-            print(f"Resumed from epoch {start_epoch}, best acc: {best_val_acc:.4f}")
+            if best_val_loss != float('inf'):
+                print(f"Resumed from epoch {start_epoch}, best val loss: {best_val_loss:.4f}")
+            else:
+                print(f"Resumed from epoch {start_epoch}, best acc: {best_val_acc:.4f}")
     
     # Training history
     history = {
@@ -346,19 +351,36 @@ def main(args, fold):
         # Save checkpoint (use fold-specific directory)
         best_checkpoint_path = checkpoint_dir / 'best_model.pth'
         
-        is_best = val_metrics['accuracy'] > best_val_acc
+        is_best = val_loss < best_val_loss
         if is_best:
+            best_val_loss = val_loss
             best_val_acc = val_metrics['accuracy']
             best_val_auc = val_metrics['auc']
             
             # Use utils.py save_checkpoint function
-            save_checkpoint(model, optimizer, epoch, best_val_acc, best_checkpoint_path)
-            print(f"\u2713 Saved best model (Val Acc: {best_val_acc:.4f})")
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch,
+                best_val_acc,
+                best_checkpoint_path,
+                best_val_loss=best_val_loss,
+                best_val_auc=best_val_auc
+            )
+            print(f"\u2713 Saved best model (Val Loss: {best_val_loss:.4f})")
         
         # Save periodic checkpoint every N epochs
         if (epoch + 1) % args.save_freq == 0:
             periodic_path = checkpoint_dir / f'checkpoint_epoch_{epoch+1}.pth'
-            save_checkpoint(model, optimizer, epoch, val_metrics['accuracy'], periodic_path)
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch,
+                val_metrics['accuracy'],
+                periodic_path,
+                best_val_loss=val_loss,
+                best_val_auc=val_metrics['auc']
+            )
             print(f"Saved checkpoint at epoch {epoch+1}")
     
     # Save final plots
@@ -371,6 +393,7 @@ def main(args, fold):
     # Save final metrics
     final_metrics = {
         'fold': fold,
+        'best_val_loss': float(best_val_loss),
         'best_val_acc': float(best_val_acc),
         'best_val_auc': float(best_val_auc),
         'final_train_loss': float(history['train_loss'][-1]),
@@ -380,8 +403,25 @@ def main(args, fold):
     }
     
     with open(checkpoint_dir / 'metrics.json', 'w') as f:
-        json.dump(final_metrics, f, indent=2)
+        json.dump(final_metrics, f, indent=4)
     
+	
+    metadata = {
+        "base_channel": args.base_channels,
+        "model_name": args.model_name,
+        "dropout": args.dropout,
+        "batch_size": args.batch_size,
+        "scheduler": args.scheduler,
+        "lr": args.lr,
+        "optimizer": args.optimizer,
+        "use_class_weights": args.use_class_weights,
+        "use_amp": args.use_amp,
+        "seed": args.seed
+	}
+    
+    with open(checkpoint_dir / 'metadata.json', 'w') as f:
+        json.dump(metadata, f, indent=4)
+
     writer.close()
     
     if args.use_wandb:
@@ -389,7 +429,7 @@ def main(args, fold):
     
     print(f"\n{'='*70}")
     print(f"Fold {fold} training completed!")
-    print(f"Best Val Acc: {best_val_acc:.4f}, Best Val AUC: {best_val_auc:.4f}")
+    print(f"Best Val Loss: {best_val_loss:.4f}, Best Val Acc: {best_val_acc:.4f}, Best Val AUC: {best_val_auc:.4f}")
     print(f"{'='*70}")
     
     return best_val_acc, best_val_auc
@@ -407,7 +447,8 @@ if __name__ == '__main__':
                        help='Number of slices per volume')
     
     # Model parameters
-    parser.add_argument('--model_name', type=str, default='compact', choices=['standard', 'compact', 'mrinet'],
+    parser.add_argument('--model_name', type=str, default='compact',
+                       choices=['standard', 'compact', 'mrinet', 'thresholded', 'gaussian_init'],
                        help='Model architecture')
     parser.add_argument('--base_channels', type=int, default=24,
                        help='Base channels for CNN backbone (24 for compact, 32 for standard)')
