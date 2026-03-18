@@ -14,12 +14,19 @@ from src.project.data import (
     infer_classes_from_data,
     load_subject_ids,
 )
+from src.project.training.artifacts import save_model_artifacts
 from src.project.training.module import build_lightning_module, compute_class_weights
 from src.project.training.trainer import build_trainer
 
 
 def resolve_repo_root() -> Path:
     return find_repo_root(Path(get_original_cwd()))
+
+
+def resolve_artifact_dir(ckpt_dir: Path) -> Path:
+    if ckpt_dir.name.startswith("fold_"):
+        return ckpt_dir.parent / "artifact"
+    return ckpt_dir / "artifact"
 
 
 def run_training(cfg: DictConfig) -> None:
@@ -29,6 +36,8 @@ def run_training(cfg: DictConfig) -> None:
         raise ImportError("lightning is required. Install it, then run again.") from exc
 
     pl.seed_everything(cfg.seed, workers=True)
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision(str(getattr(cfg.training, "matmul_precision", "high")))
 
     repo_root = resolve_repo_root()
     inferred_classes = infer_classes_from_data(cfg, repo_root)
@@ -77,6 +86,8 @@ def run_training(cfg: DictConfig) -> None:
         print(f"Class weights: {class_weights.tolist()}")
 
     model = build_lightning_module(cfg, class_weights=class_weights)
+    sample_batch = next(iter(train_loader))
+    save_model_artifacts(model, sample_batch, cfg, resolve_artifact_dir(ckpt_dir))
     trainer = build_trainer(cfg, ckpt_dir, use_validation=use_validation and val_loader is not None)
     if use_validation and val_loader is not None:
         trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)

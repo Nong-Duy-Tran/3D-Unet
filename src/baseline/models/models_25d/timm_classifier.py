@@ -12,6 +12,75 @@ from ..slice_attention import (
 )
 
 
+class SliceTokenMLP(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int | None = None,
+        dropout: float = 0.0,
+        activation: str = "gelu",
+        use_layernorm: bool = False,
+    ):
+        super().__init__()
+        if hidden_dim is None or hidden_dim <= 0:
+            self.block = nn.Identity()
+            return
+
+        act = activation.lower()
+        if act == "relu":
+            activation_layer = nn.ReLU(inplace=True)
+        elif act == "tanh":
+            activation_layer = nn.Tanh()
+        else:
+            activation_layer = nn.GELU()
+
+        layers: list[nn.Module] = []
+        if use_layernorm:
+            layers.append(nn.LayerNorm(embed_dim))
+        layers.append(nn.Linear(embed_dim, hidden_dim))
+        layers.append(activation_layer)
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(hidden_dim, embed_dim))
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        self.block = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.block, nn.Identity):
+            return x
+        return x + self.block(x)
+
+
+class SliceClassifierHead(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_classes: int,
+        dropout: float = 0.1,
+        hidden_dim: int | None = None,
+        use_layernorm: bool = False,
+    ):
+        super().__init__()
+        layers: list[nn.Module] = []
+        if use_layernorm:
+            layers.append(nn.LayerNorm(embed_dim))
+        if hidden_dim is not None and hidden_dim > 0:
+            layers.append(nn.Linear(embed_dim, hidden_dim))
+            layers.append(nn.GELU())
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            layers.append(nn.Linear(hidden_dim, num_classes))
+        else:
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            layers.append(nn.Linear(embed_dim, num_classes))
+        self.head = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.head(x)
+
+
 class Timm25DClassifier(nn.Module):
     """
     2.5D classifier for ordered slice windows.
@@ -46,6 +115,13 @@ class Timm25DClassifier(nn.Module):
         slice_attn_dropout: float = 0.0,
         slice_attn_activation: str = "tanh",
         slice_attn_use_layernorm: bool = False,
+        slice_attn_mode: str = "basic",
+        token_mlp_hidden_dim: int | None = None,
+        token_mlp_dropout: float = 0.0,
+        token_mlp_activation: str = "gelu",
+        token_mlp_use_layernorm: bool = False,
+        classifier_hidden_dim: int | None = None,
+        classifier_use_layernorm: bool = False,
     ):
         super().__init__()
         try:
@@ -86,15 +162,28 @@ class Timm25DClassifier(nn.Module):
             attn_dropout=slice_transformer_attn_dropout,
             attn_init=attn_init,
         )
+        self.token_mlp = SliceTokenMLP(
+            embed_dim=sequence_dim,
+            hidden_dim=token_mlp_hidden_dim,
+            dropout=token_mlp_dropout,
+            activation=token_mlp_activation,
+            use_layernorm=token_mlp_use_layernorm,
+        )
         self.pool = SliceAttentionPool(
             sequence_dim,
             hidden_dim=slice_attn_hidden_dim,
             dropout=slice_attn_dropout,
             activation=slice_attn_activation,
             use_layernorm=slice_attn_use_layernorm,
+            mode=slice_attn_mode,
         )
-        self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(sequence_dim, num_classes)
+        self.classifier = SliceClassifierHead(
+            embed_dim=sequence_dim,
+            num_classes=num_classes,
+            dropout=dropout,
+            hidden_dim=classifier_hidden_dim,
+            use_layernorm=classifier_use_layernorm,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 4:
@@ -109,8 +198,8 @@ class Timm25DClassifier(nn.Module):
         feats = self.slice_proj(feats)
         feats = self.slice_pos(feats)
         feats = self.slice_sequence(feats)
+        feats = self.token_mlp(feats)
         pooled = self.pool(feats)
-        pooled = self.dropout(pooled)
         return self.classifier(pooled)
 
     @staticmethod
@@ -155,4 +244,11 @@ def default_config():
         "slice_attn_dropout": 0.0,
         "slice_attn_activation": "tanh",
         "slice_attn_use_layernorm": False,
+        "slice_attn_mode": "basic",
+        "token_mlp_hidden_dim": None,
+        "token_mlp_dropout": 0.0,
+        "token_mlp_activation": "gelu",
+        "token_mlp_use_layernorm": False,
+        "classifier_hidden_dim": None,
+        "classifier_use_layernorm": False,
     }

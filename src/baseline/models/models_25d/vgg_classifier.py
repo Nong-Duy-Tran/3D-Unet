@@ -36,6 +36,7 @@ class VGG25DClassifier(nn.Module):
         slice_attn_dropout: float = 0.0,
         slice_attn_activation: str = "tanh",
         slice_attn_use_layernorm: bool = False,
+        slice_attn_mode: str = "basic",
     ):
         super().__init__()
         if image_size <= 0:
@@ -78,6 +79,7 @@ class VGG25DClassifier(nn.Module):
             dropout=slice_attn_dropout,
             activation=slice_attn_activation,
             use_layernorm=slice_attn_use_layernorm,
+            mode=slice_attn_mode,
         )
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Linear(sequence_dim, num_classes)
@@ -213,4 +215,5 @@ def default_config():
         "slice_attn_dropout": 0.0,
         "slice_attn_activation": "tanh",
         "slice_attn_use_layernorm": False,
+        "slice_attn_mode": "basic",
     }

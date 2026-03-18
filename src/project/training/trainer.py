@@ -10,6 +10,7 @@ def build_trainer(cfg: DictConfig, ckpt_dir: Path, use_validation: bool = True):
         import lightning.pytorch as pl
         from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, TQDMProgressBar
         from lightning.pytorch.loggers import WandbLogger
+        from lightning.pytorch.plugins.environments import LightningEnvironment
     except Exception as exc:  # pragma: no cover
         raise ImportError("lightning is required. Install it, then run again.") from exc
 
@@ -49,11 +50,12 @@ def build_trainer(cfg: DictConfig, ckpt_dir: Path, use_validation: bool = True):
     logger = None
     if cfg.logging.wandb.enabled:
         try:
+            wandb_save_dir = Path(getattr(cfg, "output_dir", ckpt_dir))
             logger_kwargs = dict(
                 project=cfg.logging.wandb.project,
                 name=cfg.logging.wandb.name,
                 tags=list(cfg.logging.wandb.tags),
-                save_dir=str(ckpt_dir),
+                save_dir=str(wandb_save_dir),
                 log_model=False,
             )
             wandb_group = getattr(cfg.logging.wandb, "group", None)
@@ -74,8 +76,15 @@ def build_trainer(cfg: DictConfig, ckpt_dir: Path, use_validation: bool = True):
         callbacks=callbacks,
         log_every_n_steps=1,
         enable_progress_bar=True,
+        plugins=[LightningEnvironment()],
     )
     accumulate = getattr(cfg.training, "accumulate_grad_batches", None)
     if accumulate is not None:
         trainer_kwargs["accumulate_grad_batches"] = int(accumulate)
+    gradient_clip_val = getattr(cfg.training, "gradient_clip_val", None)
+    if gradient_clip_val is not None:
+        trainer_kwargs["gradient_clip_val"] = float(gradient_clip_val)
+    gradient_clip_algorithm = getattr(cfg.training, "gradient_clip_algorithm", None)
+    if gradient_clip_algorithm is not None:
+        trainer_kwargs["gradient_clip_algorithm"] = str(gradient_clip_algorithm)
     return pl.Trainer(**trainer_kwargs)

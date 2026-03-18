@@ -12,9 +12,11 @@ class SliceAttentionPool(nn.Module):
         dropout: float = 0.0,
         activation: str = "tanh",
         use_layernorm: bool = False,
+        mode: str = "basic",
     ):
         super().__init__()
         hidden_dim = hidden_dim or (embed_dim // 2)
+        self.mode = str(mode).lower()
 
         act = activation.lower()
         if act == "gelu":
@@ -24,18 +26,33 @@ class SliceAttentionPool(nn.Module):
         else:
             activation_layer = nn.Tanh()
 
-        layers: list[nn.Module] = []
+        trunk_layers: list[nn.Module] = []
         if use_layernorm:
-            layers.append(nn.LayerNorm(embed_dim))
-        layers.extend([nn.Linear(embed_dim, hidden_dim), activation_layer])
+            trunk_layers.append(nn.LayerNorm(embed_dim))
+        trunk_layers.append(nn.Linear(embed_dim, hidden_dim))
+        trunk_layers.append(activation_layer)
         if dropout > 0:
-            layers.append(nn.Dropout(dropout))
-        layers.append(nn.Linear(hidden_dim, 1))
-        self.attn = nn.Sequential(*layers)
+            trunk_layers.append(nn.Dropout(dropout))
+        self.attn = nn.Sequential(*trunk_layers)
+        self.score = nn.Linear(hidden_dim, 1)
+        self.gate = None
+        if self.mode == "gated":
+            gate_layers: list[nn.Module] = []
+            if use_layernorm:
+                gate_layers.append(nn.LayerNorm(embed_dim))
+            gate_layers.extend([nn.Linear(embed_dim, hidden_dim), nn.Sigmoid()])
+            if dropout > 0:
+                gate_layers.append(nn.Dropout(dropout))
+            self.gate = nn.Sequential(*gate_layers)
+        elif self.mode != "basic":
+            raise ValueError(f"Unsupported slice attention pooling mode: {mode}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        weights = self.attn(x)
-        weights = torch.softmax(weights, dim=1)
+        hidden = self.attn(x)
+        if self.gate is not None:
+            hidden = hidden * self.gate(x)
+        scores = self.score(hidden)
+        weights = torch.softmax(scores, dim=1)
         return (weights * x).sum(dim=1)
 
 
@@ -129,7 +146,7 @@ class SliceSelfAttentionEncoder(nn.Module):
         )
         if attn_dropout > 0:
             layer.self_attn.dropout = float(attn_dropout)
-        self.encoder = nn.TransformerEncoder(layer, num_layers=depth)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=depth, enable_nested_tensor=False)
 
     @staticmethod
     def _build_center_prior_mask(
@@ -148,6 +165,9 @@ class SliceSelfAttentionEncoder(nn.Module):
 
         # Add a soft bias toward center keys for every query position.
         prior_logits = 0.2 * torch.log(prior.clamp_min(1e-8))
+        # Keep the preferred key at 0 and bias others negatively.
+        # Some attention backends become unstable when every mask entry is negative.
+        prior_logits = prior_logits - prior_logits.max()
         return prior_logits.unsqueeze(0).expand(seq_len, seq_len).to(dtype=dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

@@ -22,7 +22,7 @@ def _append_if_missing(overrides: list[str], key: str, value: str) -> None:
         overrides.append(f"{key}={value}")
 
 
-def _apply_data_version_conventions(overrides: list[str]) -> list[str]:
+def _apply_data_version_conventions(overrides: list[str], cfg) -> list[str]:
     data_version = _get_override_value(overrides, "data.data_version")
     if data_version is None:
         return overrides
@@ -30,10 +30,18 @@ def _apply_data_version_conventions(overrides: list[str]) -> list[str]:
     if data_version not in {"v1", "v2", "v3"}:
         return overrides
 
+    data_cfg = getattr(cfg, "data", None)
+    has_train_dir = data_cfg is not None and getattr(data_cfg, "train_dir", None) is not None
+    has_val_dir = data_cfg is not None and getattr(data_cfg, "val_dir", None) is not None
+    has_test_dir = data_cfg is not None and getattr(data_cfg, "test_dir", None) is not None
+
     data_root_2d = f"data/processed_oasis_2d_cv5_{data_version}"
-    _append_if_missing(overrides, "data.train_dir", f"{data_root_2d}/axial/fold_${{data.fold_index}}/train")
-    _append_if_missing(overrides, "data.val_dir", f"{data_root_2d}/axial/fold_${{data.fold_index}}/val")
-    _append_if_missing(overrides, "data.test_dir", f"{data_root_2d}/axial/fold_${{data.fold_index}}/test")
+    if not has_train_dir:
+        _append_if_missing(overrides, "data.train_dir", f"{data_root_2d}/axial/fold_${{data.fold_index}}/train")
+    if not has_val_dir:
+        _append_if_missing(overrides, "data.val_dir", f"{data_root_2d}/axial/fold_${{data.fold_index}}/val")
+    if not has_test_dir:
+        _append_if_missing(overrides, "data.test_dir", f"{data_root_2d}/axial/fold_${{data.fold_index}}/test")
     return overrides
 
 
@@ -86,16 +94,11 @@ def run_kfold(args: argparse.Namespace, repo_root: Path) -> int:
     config_kind, cfg_path = resolve_config(repo_root, args.config_name)
     cfg = OmegaConf.load(cfg_path)
     if args.override:
-        args.override = _apply_data_version_conventions(list(args.override))
+        args.override = _apply_data_version_conventions(list(args.override), cfg)
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.override))
 
     base_ckpt = getattr(getattr(cfg, "checkpoint", None), "dir", None) or "checkpoints/kfold"
     base_out = getattr(cfg, "output_dir", None) or f"outputs/{args.config_name}"
-    data_version = _get_override_value(args.override, "data.data_version") or getattr(getattr(cfg, "data", None), "data_version", None)
-    if _get_override_value(args.override, "checkpoint.dir") is None and data_version in {"v1", "v2", "v3"}:
-        base_ckpt = f"checkpoints/25d/resnet18_selfattn_pos_50sl_5folds_{data_version}"
-    if _get_override_value(args.override, "output_dir") is None and data_version in {"v1", "v2", "v3"}:
-        base_out = f"outputs/25d/resnet18_selfattn_pos_50sl_5folds_{data_version}"
     base_hydra = f"{base_out}/hydra"
     end_fold = args.end_fold if args.end_fold is not None else args.folds
 
@@ -132,7 +135,7 @@ def run_kfold(args: argparse.Namespace, repo_root: Path) -> int:
                 *overrides,
             ]
 
-        print("Running:", " ".join(cmd))
+        # print("Running:", " ".join(cmd))
         if args.dry_run:
             continue
 

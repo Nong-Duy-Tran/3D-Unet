@@ -56,6 +56,7 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
                 "slice_attn_use_layernorm": bool(getattr(cfg.model, "slice_attn_use_layernorm", False)),
+                "slice_attn_mode": getattr(cfg.model, "slice_attn_mode", "basic"),
             }
         )
         return model_kwargs
@@ -75,10 +76,36 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "drop_path_rate": cfg.model.drop_path_rate,
                 "attn_drop_rate": cfg.model.attn_drop_rate,
                 "dropout": cfg.model.dropout,
+                "slice_embed_dim": getattr(cfg.model, "slice_embed_dim", None),
+                "slice_pos_encoding": getattr(cfg.model, "slice_pos_encoding", "none"),
+                "slice_pos_max_len": int(
+                    getattr(cfg.model, "slice_pos_max_len", getattr(cfg.data, "num_slices", 512))
+                ),
+                "slice_pos_dropout": float(getattr(cfg.model, "slice_pos_dropout", 0.0)),
+                "slice_sequence_encoder": getattr(cfg.model, "slice_sequence_encoder", "none"),
+                "slice_num_heads": int(getattr(cfg.model, "slice_num_heads", 8)),
+                "slice_transformer_depth": int(getattr(cfg.model, "slice_transformer_depth", 1)),
+                "slice_transformer_mlp_ratio": float(
+                    getattr(cfg.model, "slice_transformer_mlp_ratio", 4.0)
+                ),
+                "slice_transformer_dropout": float(
+                    getattr(cfg.model, "slice_transformer_dropout", 0.0)
+                ),
+                "slice_transformer_attn_dropout": float(
+                    getattr(cfg.model, "slice_transformer_attn_dropout", 0.0)
+                ),
+                "attn_init": bool(getattr(cfg.model, "attn_init", False)),
                 "slice_attn_hidden_dim": getattr(cfg.model, "slice_attn_hidden_dim", None),
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
                 "slice_attn_use_layernorm": bool(getattr(cfg.model, "slice_attn_use_layernorm", False)),
+                "slice_attn_mode": getattr(cfg.model, "slice_attn_mode", "basic"),
+                "token_mlp_hidden_dim": getattr(cfg.model, "token_mlp_hidden_dim", None),
+                "token_mlp_dropout": float(getattr(cfg.model, "token_mlp_dropout", 0.0)),
+                "token_mlp_activation": getattr(cfg.model, "token_mlp_activation", "gelu"),
+                "token_mlp_use_layernorm": bool(getattr(cfg.model, "token_mlp_use_layernorm", False)),
+                "classifier_hidden_dim": getattr(cfg.model, "classifier_hidden_dim", None),
+                "classifier_use_layernorm": bool(getattr(cfg.model, "classifier_use_layernorm", False)),
             }
         )
         return model_kwargs
@@ -119,6 +146,7 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
                 "slice_attn_use_layernorm": bool(getattr(cfg.model, "slice_attn_use_layernorm", False)),
+                "slice_attn_mode": getattr(cfg.model, "slice_attn_mode", "basic"),
             }
         )
         return model_kwargs
@@ -141,6 +169,7 @@ def build_model_kwargs(cfg: DictConfig) -> dict[str, Any]:
                 "slice_attn_dropout": float(getattr(cfg.model, "slice_attn_dropout", 0.0)),
                 "slice_attn_activation": getattr(cfg.model, "slice_attn_activation", "tanh"),
                 "slice_attn_use_layernorm": bool(getattr(cfg.model, "slice_attn_use_layernorm", False)),
+                "slice_attn_mode": getattr(cfg.model, "slice_attn_mode", "basic"),
             }
         )
         return model_kwargs

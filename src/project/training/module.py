@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import torch
 
@@ -80,6 +81,7 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             self._test_preds: list[torch.Tensor] = []
             self._test_targets: list[torch.Tensor] = []
             self._test_probs: list[torch.Tensor] = []
+            self._nonfinite_warned_stages: set[str] = set()
 
         def train(self, mode: bool = True):
             super().train(mode)
@@ -112,9 +114,23 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 return None
             y_true = targets.detach().cpu().numpy()
             y_score = probs[:, 1].detach().cpu().numpy()
+            valid_mask = np.isfinite(y_score)
+            y_true = y_true[valid_mask]
+            y_score = y_score[valid_mask]
+            if y_true.size == 0:
+                return None
             if len(set(y_true.tolist())) < 2:
                 return None
             return float(roc_auc_score(y_true, y_score))
+
+        def _sanitize_logits(self, logits: torch.Tensor, stage: str) -> torch.Tensor:
+            if torch.isfinite(logits).all():
+                return logits
+            if stage not in self._nonfinite_warned_stages:
+                print(f"Warning: non-finite logits detected during {stage}; applying nan_to_num stabilization.")
+                self._nonfinite_warned_stages.add(stage)
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0)
+            return logits.clamp(min=-20.0, max=20.0)
 
         def _specificity_from_confusion_matrix(self, cm: Any) -> float:
             cm = torch.as_tensor(cm, dtype=torch.float32)
@@ -137,7 +153,7 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
         def _shared_step(self, batch: Any, stage: str) -> STEP_OUTPUT:
             x, y = batch
-            logits = self.forward(x)
+            logits = self._sanitize_logits(self.forward(x), stage)
             loss = self.loss_fn(logits, y)
             probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
@@ -153,7 +169,7 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
         def training_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
             x, y = batch
-            logits = self.forward(x)
+            logits = self._sanitize_logits(self.forward(x), "train")
             loss = self.loss_fn(logits, y)
             probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
@@ -177,7 +193,7 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
         def validation_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
             x, y = batch
-            logits = self.forward(x)
+            logits = self._sanitize_logits(self.forward(x), "val")
             loss = self.loss_fn(logits, y)
             probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
@@ -209,6 +225,17 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             preds = torch.cat(preds_list).numpy()
             targets = torch.cat(targets_list).numpy()
             probs = torch.cat(probs_list).numpy() if probs_list else None
+            if probs is not None:
+                valid_mask = np.isfinite(probs).all(axis=1)
+                if not valid_mask.all():
+                    dropped = int((~valid_mask).sum())
+                    print(f"Warning: dropped {dropped} non-finite probability rows when computing {stage} metrics.")
+                    preds = preds[valid_mask]
+                    targets = targets[valid_mask]
+                    probs = probs[valid_mask]
+                if len(targets) == 0:
+                    print(f"Warning: no valid samples remained for {stage} metrics after filtering.")
+                    return
 
             precision = precision_score(targets, preds, zero_division=0, average="macro")
             recall = recall_score(targets, preds, zero_division=0, average="macro")
@@ -251,7 +278,7 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
 
         def test_step(self, batch: Any, batch_idx: int) -> STEP_OUTPUT:
             x, y = batch
-            logits = self.forward(x)
+            logits = self._sanitize_logits(self.forward(x), "test")
             loss = self.loss_fn(logits, y)
             probs = torch.softmax(logits, dim=1)
             preds = logits.argmax(dim=1)
