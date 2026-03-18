@@ -16,11 +16,13 @@ echo "======================================================================"
 
 # Configuration
 OASIS_DIR="./data/OASIS"
-OUTPUT_DIR="./data/processed_oasis_cv5_skull_strip"
+OUTPUT_DIR="./data/processed_oasis_3d_cv5_v2"
 N_FOLDS=5
 SEED=42
 SKULL_STRIP=true
-BET_DEVICE="cuda"
+HDBET_DEVICE="cuda"
+LABEL_MODE="normal_vs_nonnormal"
+TEAM_ORIENTATION=true
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -45,9 +47,17 @@ while [[ $# -gt 0 ]]; do
             SKULL_STRIP=true
             shift
             ;;
-        --bet_device)
-            BET_DEVICE="$2"
+        --hdbet_device)
+            HDBET_DEVICE="$2"
             shift 2
+            ;;
+        --label_mode)
+            LABEL_MODE="$2"
+            shift 2
+            ;;
+        --team_orientation)
+            TEAM_ORIENTATION=true
+            shift
             ;;
         --dry_run)
             DRY_RUN="--dry_run"
@@ -62,11 +72,13 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --oasis_dir DIR     OASIS data directory (default: ./data/OASIS)"
-            echo "  --output_dir DIR    Output directory (default: ./data/processed_oasis_cv5)"
+            echo "  --output_dir DIR    Output directory (default: ./data/processed_oasis_3d_cv5_v2)"
             echo "  --n_folds N         Number of CV folds (default: 5)"
             echo "  --seed SEED         Random seed (default: 42)"
             echo "  --skull_strip       Apply HD-BET skull stripping (RECOMMENDED)"
-            echo "  --bet_device DEV    HD-BET device: cpu or cuda (default: cpu)"
+            echo "  --hdbet_device DEV  HD-BET device: cpu or cuda (default: cuda)"
+            echo "  --label_mode MODE   Label mapping mode (default: normal_vs_nonnormal)"
+            echo "  --team_orientation  Apply team orientation remap (default: enabled)"
             echo "  --dry_run           Don't copy files, just show statistics"
             echo "  --verbose           Print detailed information"
             echo "  -h, --help          Show this help message"
@@ -94,7 +106,9 @@ echo "  OASIS directory:  $OASIS_DIR"
 echo "  Output directory: $OUTPUT_DIR"
 echo "  Number of folds:  $N_FOLDS"
 echo "  Random seed:      $SEED"
-echo "  Skull stripping:  $SKULL_STRIP (device=$BET_DEVICE)"
+echo "  Label mode:       $LABEL_MODE"
+echo "  Team orientation: $TEAM_ORIENTATION"
+echo "  Skull stripping:  $SKULL_STRIP (device=$HDBET_DEVICE)"
 echo ""
 
 # Check Python dependencies
@@ -116,12 +130,14 @@ echo "Starting preprocessing..."
 echo "======================================================================"
 echo ""
 
-python process_data/preprocess_oasis_cv5.py \
+python process_data/preprocess_oasis_3d.py \
     --oasis_dir "$OASIS_DIR" \
     --output_dir "$OUTPUT_DIR" \
     --n_folds $N_FOLDS \
     --seed $SEED \
-    $([ "$SKULL_STRIP" = true ] && echo "--skull_strip --bet_device $BET_DEVICE") \
+    --label_mode "$LABEL_MODE" \
+    $([ "$SKULL_STRIP" = true ] && echo "--skull_strip --hdbet_device $HDBET_DEVICE") \
+    $([ "$TEAM_ORIENTATION" = true ] && echo "--team_orientation") \
     $DRY_RUN \
     $VERBOSE
 
@@ -136,16 +152,12 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "Directory structure:"
     echo "  $OUTPUT_DIR/"
-    echo "    ├── fold_0/  (train + test)"
-    echo "    ├── fold_1/  (train + test)"
-    echo "    ├── fold_2/  (train + test)"
-    echo "    ├── fold_3/  (train + test)"
-    echo "    ├── fold_4/  (train + test)"
+    echo "    ├── _cache/  (<session_id>.nii.gz)"
     echo "    └── split_info/  (metadata)"
     echo ""
     echo "Next steps:"
-    echo "  1. Train each fold: bash script/train_cv5_fold.sh <fold_num>"
-    echo "  2. Evaluate all:    bash script/evaluate_cv5_all.sh"
+    echo "  1. Export 2D slices from cache + split_info"
+    echo "  2. Train/evaluate by fold metadata in split_info/folds.json"
     echo ""
 else
     echo ""
