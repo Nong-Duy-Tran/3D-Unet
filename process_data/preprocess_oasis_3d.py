@@ -10,7 +10,8 @@ Stage 1 - Cache:
   resample 1 mm iso -> crop by slice energy -> .nii.gz
 
 Stage 2 - Split metadata:
-  create standard 5-fold CV metadata only (train/test) using StratifiedGroupKFold.
+    create standard 5-fold CV metadata (train/val/test) using StratifiedGroupKFold.
+    For each outer fold, val is a single 20% split from train (not nested k-fold).
   No per-fold 3D directories are materialized; folds are managed by JSON.
 """
 from __future__ import annotations
@@ -272,6 +273,52 @@ def create_cv_splits(
     print(f"All {n_folds} folds created – each session in test exactly once.")
     print(f"{'=' * _w}")
     return cv_splits
+
+
+def create_train_val_split_once(
+    train_data: list[dict],
+    val_ratio: float = 0.2,
+    seed: int = 42,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Create one deterministic stratified grouped train/val split from outer-train.
+
+    Uses StratifiedGroupKFold once (first split only), with:
+      group_id = patient_id
+      val_ratio ~= 1 / n_splits
+    """
+    if not train_data:
+        return [], []
+
+    if not (0.0 < val_ratio < 1.0):
+        raise ValueError(f"val_ratio must be in (0, 1), got {val_ratio}")
+
+    samples = np.array(train_data, dtype=object)
+    labels = np.array([s["label"] for s in train_data], dtype=np.int64)
+    groups = np.array([s["group_id"] for s in train_data], dtype=object)
+
+    n_splits = int(round(1.0 / val_ratio))
+    n_splits = max(2, n_splits)
+
+    sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    inner_train_idx, val_idx = next(sgkf.split(samples, labels, groups))
+
+    inner_train: list[dict] = samples[inner_train_idx].tolist()
+    val_data: list[dict] = samples[val_idx].tolist()
+
+    train_sessions = {x["session_id"] for x in inner_train}
+    val_sessions = {x["session_id"] for x in val_data}
+    overlap = train_sessions & val_sessions
+    if overlap:
+        raise RuntimeError(f"Inner split: train/val session overlap detected: {sorted(overlap)[:5]}")
+
+    train_groups = {x["group_id"] for x in inner_train}
+    val_groups = {x["group_id"] for x in val_data}
+    group_overlap = train_groups & val_groups
+    if group_overlap:
+        raise RuntimeError(f"Inner split: train/val group overlap detected: {sorted(group_overlap)[:5]}")
+
+    return inner_train, val_data
 
 
 # ---------------------------------------------------------------------------
@@ -650,11 +697,16 @@ def preprocess_all_to_cache(
 def save_fold_metadata(
     cv_splits: list[tuple[list[dict], list[dict]]],
     output_dir: Path,
+    val_ratio: float = 0.2,
+    val_seed: int = 42,
 ) -> dict:
     """
-    Save one JSON-driven split manifest plus summaries.
+    Save one JSON-driven split manifest plus summaries, including val split.
+
+    Output folder:
+      split_info_with_val/
     """
-    info_dir = output_dir / "split_info"
+    info_dir = output_dir / "split_info_with_val"
     info_dir.mkdir(parents=True, exist_ok=True)
 
     label_mode = cv_splits[0][0][0]["label_mode"] if cv_splits and cv_splits[0][0] else None
@@ -665,6 +717,9 @@ def save_fold_metadata(
     folds_json: dict = {
         "n_folds": len(cv_splits),
         "split_strategy": "StratifiedGroupKFold",
+        "val_split_strategy": "StratifiedGroupKFold-single-split",
+        "val_ratio": val_ratio,
+        "val_seed": val_seed,
         "label_mode": label_mode,
         "class_names": class_names,
         "folds": [],
@@ -672,10 +727,16 @@ def save_fold_metadata(
     summary: dict = {"n_folds": len(cv_splits), "stratified": True, "grouped": True, "folds": {}}
     cdr_stats: dict = {}
 
-    for fold_idx, (train_data, test_data) in enumerate(cv_splits):
+    for fold_idx, (outer_train_data, test_data) in enumerate(cv_splits):
+        train_data, val_data = create_train_val_split_once(
+            outer_train_data,
+            val_ratio=val_ratio,
+            seed=val_seed,
+        )
+
         fold_key = f"fold_{fold_idx}"
-        fold_entry = {"fold_index": fold_idx, "train": [], "test": []}
-        for split_name, split_data in [("train", train_data), ("test", test_data)]:
+        fold_entry = {"fold_index": fold_idx, "train": [], "val": [], "test": []}
+        for split_name, split_data in [("train", train_data), ("val", val_data), ("test", test_data)]:
             split_rows = []
             for item in split_data:
                 row = dict(item)
@@ -685,6 +746,12 @@ def save_fold_metadata(
             fold_entry[split_name] = split_rows
         folds_json["folds"].append(fold_entry)
 
+        train_ids = {x["session_id"] for x in train_data}
+        val_ids = {x["session_id"] for x in val_data}
+        test_ids = {x["session_id"] for x in test_data}
+        if (train_ids & val_ids) or (train_ids & test_ids) or (val_ids & test_ids):
+            raise RuntimeError(f"Fold {fold_idx}: overlap detected across train/val/test splits")
+
         def _stats(d: list[dict]) -> dict:
             counts = {name: 0 for name in class_names}
             for item in d:
@@ -693,11 +760,12 @@ def save_fold_metadata(
 
         summary["folds"][fold_key] = {
             "train": _stats(train_data),
+            "val": _stats(val_data),
             "test":  _stats(test_data),
         }
 
-        cdr_stats[fold_key] = {"train": {}, "test": {}}
-        for split_name, split_data in [("train", train_data), ("test", test_data)]:
+        cdr_stats[fold_key] = {"train": {}, "val": {}, "test": {}}
+        for split_name, split_data in [("train", train_data), ("val", val_data), ("test", test_data)]:
             for item in split_data:
                 cdr = str(item["cdr"])
                 cdr_stats[fold_key][split_name][cdr] = (
@@ -716,7 +784,7 @@ def save_fold_metadata(
 
     all_rows = []
     for fold in folds_json["folds"]:
-        for split_name in ("train", "test"):
+        for split_name in ("train", "val", "test"):
             all_rows.extend(fold[split_name])
     pd.DataFrame(all_rows).to_csv(info_dir / "folds.csv", index=False)
 
@@ -792,7 +860,7 @@ def main(args: argparse.Namespace) -> None:
         print("\n" + "=" * 70)
         print("Dry run – no files written. Remove --dry_run to process.")
         print("=" * 70)
-        save_fold_metadata(cv_splits, output_dir)
+        save_fold_metadata(cv_splits, output_dir, val_ratio=0.2, val_seed=args.seed)
         return
 
     # ------------------------------------------------------------ process
@@ -807,7 +875,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # ---------------------------------------------------------- metadata
-    summary = save_fold_metadata(cv_splits, output_dir)
+    summary = save_fold_metadata(cv_splits, output_dir, val_ratio=0.2, val_seed=args.seed)
 
     # ---------------------------------------------------------- summary
     print("\n" + "=" * 70)
@@ -817,7 +885,7 @@ def main(args: argparse.Namespace) -> None:
     print("\nDirectory structure:")
     print("  _cache/")
     print("    <session_id>.nii.gz")
-    print("  split_info/")
+    print("  split_info_with_val/")
     print("    folds.json")
     print("    folds.csv")
     print("    summary.json")
@@ -826,7 +894,7 @@ def main(args: argparse.Namespace) -> None:
         fk = f"fold_{fold_idx}"
         fs = summary["folds"][fk]
         print(f"\n  {fk}:")
-        for split_name in ("train", "test"):
+        for split_name in ("train", "val", "test"):
             st = fs[split_name]
             print(
                 f"    {split_name}: "
@@ -837,10 +905,10 @@ def main(args: argparse.Namespace) -> None:
     print("\n" + "=" * 70)
     print("Next steps")
     print("=" * 70)
-    print("\n1. Export 2D slices from cache + split_info:")
+    print("\n1. Export 2D slices from cache + split_info_with_val:")
     print("   python src/data/v2/postprocess_oasis_data.py --input_dir <output_dir> --output_dir <2d_output_dir>")
-    print("\n2. Point training configs to fold_{k}/train and fold_{k}/test.")
-    print("   If fold_{k}/val does not exist, the training code will create an internal validation split from train/.")
+    print("\n2. Point training configs to fold_{k}/train, fold_{k}/val, and fold_{k}/test.")
+    print("   Validation split is predefined in split_info_with_val (single split per fold).")
 
 
 # ---------------------------------------------------------------------------

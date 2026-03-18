@@ -13,10 +13,11 @@ echo "OASIS 2D Data Preprocessing"
 echo "=========================================="
 
 # Default parameters
-OASIS_DIR="./data/processed_oasis_3d_cv5_sample"
+OASIS_DIR="./data/processed_oasis_3d_cv5_v2"
 OUTPUT_DIR="./data/processed_oasis_2d_cv5"
 IMG_SIZE=224
 NUM_SLICES=80
+AXIS="sagital"
 NORM_METHOD="percentile"
 
 # Parse arguments
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --num_slices)
             NUM_SLICES="$2"
+            shift 2
+            ;;
+        --axis)
+            AXIS="$2"
             shift 2
             ;;
         --norm_method)
@@ -63,6 +68,7 @@ echo "  Input directory:  $OASIS_DIR"
 echo "  Output directory: $OUTPUT_DIR"
 echo "  Image size:       ${IMG_SIZE}x${IMG_SIZE}"
 echo "  Number of slices: $NUM_SLICES"
+echo "  Axis:             $AXIS"
 echo "  Normalization:    $NORM_METHOD"
 echo ""
 
@@ -72,6 +78,7 @@ CMD="python process_data/preprocess_oasis_2d.py \
     --output_dir $OUTPUT_DIR \
     --img_size $IMG_SIZE \
     --num_slices $NUM_SLICES \
+    --axis $AXIS \
     --norm_method $NORM_METHOD"
 
 if [ ! -z "$DRY_RUN" ]; then

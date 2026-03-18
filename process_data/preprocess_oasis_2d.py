@@ -1,9 +1,13 @@
 """
 2D Data preprocessing script for OASIS Alzheimer's Disease dataset
-Extracts center axial slices (axis=2) with smart cropping and padding.
+Extracts center slices from a configurable axis with smart cropping and padding.
 
-Input: Pre-processed skull-stripped data from processed_oasis_cv5_skullstrip
-  Structure: fold_X/{train,val,test}/{normal,alzheimer}/*.nii.gz
+Input supports two preprocessed formats:
+1) V2 cache + manifest (recommended):
+    - _cache/<session_id>.nii.gz
+    - split_info_with_val/folds.json (or split_info/folds.json)
+2) Legacy fold directories:
+    - fold_X/{train,val,test}/{normal,alzheimer}/*.nii.gz
 """
 import os
 import json
@@ -15,6 +19,22 @@ import nibabel as nib
 import warnings
 warnings.filterwarnings('ignore')
 
+AXIS_NAME_BY_INDEX = {
+    0: 'sagital',
+    1: 'coronal',
+    2: 'axial',
+}
+
+AXIS_ALIAS_TO_INDEX = {
+    '0': 0,
+    '1': 1,
+    '2': 2,
+    'sagital': 0,
+    'sagittal': 0,
+    'coronal': 1,
+    'axial': 2,
+}
+
 try:
     from skimage.transform import resize
 except ImportError:
@@ -22,22 +42,185 @@ except ImportError:
     resize = None
 
 
+def resolve_slice_axis(axis_value):
+    """Resolve axis input (index or name) into (axis_idx, axis_name)."""
+    axis_key = str(axis_value).strip().lower()
+    if axis_key not in AXIS_ALIAS_TO_INDEX:
+        valid = "0|1|2|sagital|sagittal|coronal|axial"
+        raise ValueError(f"Invalid axis '{axis_value}'. Valid values: {valid}")
+
+    axis_idx = AXIS_ALIAS_TO_INDEX[axis_key]
+    return axis_idx, AXIS_NAME_BY_INDEX[axis_idx]
+
+
+def move_slice_axis_to_last(data, axis_idx):
+    """Reorder volume so selected slice axis becomes the last dimension."""
+    if axis_idx == 2:
+        return data
+    if axis_idx == 1:
+        return np.transpose(data, (0, 2, 1))
+    return np.transpose(data, (1, 2, 0))
+
+
+def build_axis_output_dir(output_dir, axis_name):
+    """Append axis suffix to output folder name unless already present."""
+    output_path = Path(output_dir)
+    suffix = f"_{axis_name}"
+    if output_path.name.endswith(suffix):
+        return output_path
+    return output_path.with_name(output_path.name + suffix)
+
+
 def find_subjects_from_preprocessed_folds(input_dir, verbose=False):
     """
-    Read subjects from a pre-processed fold directory structure.
-    Skull stripping has already been applied to this data.
+    Read subjects and fold splits from preprocessed data.
 
-    Expected structure:
+    Preferred structure (v2):
+      input_dir/_cache/*.nii.gz
+      input_dir/split_info_with_val/folds.json
+
+    Legacy structure (fallback):
       input_dir/fold_X/{train,val,test}/{normal,alzheimer}/*.nii.gz
 
     Args:
-        input_dir: Path to the pre-processed directory (e.g. processed_oasis_cv5_skullstrip)
+        input_dir: Path to the preprocessed directory
         verbose: Print per-subject details
 
     Returns:
         (all_subjects, folds): all unique subjects and pre-defined fold splits
     """
     input_path = Path(input_dir)
+
+    # Prefer v2 metadata-driven format: _cache + split_info_with_val/folds.json
+    cache_dir = input_path / '_cache'
+    manifest_candidates = [
+        input_path / 'split_info_with_val' / 'folds.json',
+        input_path / 'split_info' / 'folds.json',
+    ]
+    manifest_path = next((p for p in manifest_candidates if p.exists()), None)
+
+    if cache_dir.exists() and manifest_path is not None:
+        print(f"\nDetected v2 structure with cache + manifest")
+        print(f"  Cache:    {cache_dir}")
+        print(f"  Manifest: {manifest_path}")
+
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+
+        fold_entries = manifest.get('folds', [])
+        if not isinstance(fold_entries, list) or len(fold_entries) == 0:
+            raise ValueError(f"Invalid manifest format in {manifest_path}: 'folds' must be a non-empty list")
+
+        print(f"\nFound {len(fold_entries)} fold definitions in manifest")
+
+        all_subjects_map = {}
+        folds = []
+        missing_cache_files = []
+
+        for fold_entry in fold_entries:
+            fold_idx = int(fold_entry.get('fold_index', len(folds)))
+            split_subjects = {'train': [], 'val': [], 'test': []}
+
+            for split in ['train', 'val', 'test']:
+                split_items = fold_entry.get(split, [])
+                seen_ids = set()
+
+                for item in split_items:
+                    subject_id = item.get('session_id') or item.get('subject_id')
+                    if not subject_id:
+                        if verbose:
+                            print(f"  Warning: fold {fold_idx} {split} item missing session_id")
+                        continue
+
+                    if subject_id in seen_ids:
+                        continue
+                    seen_ids.add(subject_id)
+
+                    img_file = cache_dir / f"{subject_id}.nii.gz"
+                    if not img_file.exists():
+                        missing_cache_files.append(str(img_file))
+                        if verbose:
+                            print(f"  Missing cached file: {img_file}")
+                        continue
+
+                    class_name = item.get('class_name')
+                    raw_label = item.get('label')
+                    if raw_label is None:
+                        if class_name is not None:
+                            raw_label = 0 if str(class_name).lower() == 'normal' else 1
+                        else:
+                            raw_label = 0
+
+                    label = int(raw_label)
+                    if class_name is None:
+                        class_name = 'normal' if label == 0 else 'alzheimer'
+
+                    cdr_val = item.get('cdr', 0.0 if label == 0 else 0.5)
+                    try:
+                        cdr_val = float(cdr_val)
+                    except (TypeError, ValueError):
+                        cdr_val = 0.0 if label == 0 else 0.5
+
+                    subj = {
+                        'subject_id': subject_id,
+                        'img_file': str(img_file),
+                        'label': label,
+                        'class_name': class_name,
+                        'cdr': cdr_val,
+                        'patient_id': item.get('patient_id'),
+                        'visit_id': item.get('visit_id'),
+                    }
+
+                    if subject_id in all_subjects_map:
+                        prev_label = all_subjects_map[subject_id]['label']
+                        if prev_label != label:
+                            raise ValueError(
+                                f"Inconsistent label for {subject_id}: {prev_label} vs {label}"
+                            )
+                    else:
+                        all_subjects_map[subject_id] = subj
+
+                    split_subjects[split].append(subj)
+
+            print(f"\nFold {fold_idx}:")
+            for split in ['train', 'val', 'test']:
+                subjs = split_subjects[split]
+                if subjs:
+                    lbls = np.array([s['label'] for s in subjs])
+                    print(f"  {split:5s}: {len(subjs):3d} subjects "
+                          f"(Normal: {np.sum(lbls == 0)}, Positive: {np.sum(lbls == 1)})")
+                else:
+                    print(f"  {split:5s}:   0 subjects")
+
+            folds.append({
+                'fold': fold_idx,
+                'train_subjects': split_subjects['train'],
+                'val_subjects':   split_subjects['val'],
+                'test_subjects':  split_subjects['test'],
+                'train_indices':  list(range(len(split_subjects['train']))),
+                'val_indices':    list(range(len(split_subjects['val']))),
+            })
+
+        if missing_cache_files:
+            unique_missing = sorted(set(missing_cache_files))
+            print(f"\nWarning: {len(unique_missing)} cached files were referenced in manifest but not found")
+            if verbose:
+                for p in unique_missing[:20]:
+                    print(f"  - {p}")
+                if len(unique_missing) > 20:
+                    print(f"  ... and {len(unique_missing) - 20} more")
+
+        all_subjects = list(all_subjects_map.values())
+        print(f"\nTotal unique subjects: {len(all_subjects)}")
+        print(f"  Normal:   {sum(1 for s in all_subjects if s['label'] == 0)}")
+        print(f"  Positive: {sum(1 for s in all_subjects if s['label'] == 1)}")
+
+        return all_subjects, folds
+
+    # ------------------------------------------------------------------
+    # Legacy format fallback
+    # ------------------------------------------------------------------
+    print("\nManifest-based split not found, falling back to legacy fold directories")
     fold_dirs = sorted(
         [d for d in input_path.iterdir() if d.is_dir() and d.name.startswith('fold_')],
         key=lambda d: int(d.name.split('_')[1])
@@ -143,8 +326,10 @@ def analyze_axial_content(data, num_slices=120):
 
     return None
 
+# TODO: Analyze the target_size problem, whether it effect to the splitting on axis sagital and coronal
+def crop_and_pad_axial_slices(data, num_slices=120, target_size=224, axis_idx=2):
+    data = move_slice_axis_to_last(data, axis_idx)
 
-def crop_and_pad_axial_slices(data, num_slices=120, target_size=224):
     z_dim = data.shape[2]
     if z_dim < num_slices:
         pad_before = (num_slices - z_dim) // 2
@@ -304,7 +489,12 @@ def process_single_subject(img_file, subject_id, args):
         img = nib.load(img_file)
         data = np.squeeze(img.get_fdata()).astype(np.float32)
 
-        data = crop_and_pad_axial_slices(data, num_slices=args.num_slices, target_size=args.img_size)
+        data = crop_and_pad_axial_slices(
+            data,
+            num_slices=args.num_slices,
+            target_size=args.img_size,
+            axis_idx=args.axis_idx,
+        )
         data = normalize_intensity(data, method=args.norm_method)
 
         # (num_slices, H, W) -> (H, W, num_slices)
@@ -330,7 +520,7 @@ def save_processed_data(subjects, folds, output_dir, args):
     - Shape: (N, H, W, num_slices) where H=W=img_size, and last dimension is number of axial slices
     - Axial slices are intelligently cropped and padded with brain centered
     """
-    output_path = Path(output_dir)
+    output_path = build_axis_output_dir(output_dir, args.axis_name)
     output_path.mkdir(parents=True, exist_ok=True)
     
     print("\n" + "="*70)
@@ -462,6 +652,8 @@ def save_processed_data(subjects, folds, output_dir, args):
             'preprocessing': {
                 'img_size': args.img_size,
                 'num_slices': args.num_slices,
+                'slice_axis_index': args.axis_idx,
+                'slice_axis_name': args.axis_name,
                 'skull_strip': 'pre-applied',
                 'norm_method': args.norm_method
             }
@@ -482,6 +674,8 @@ def save_processed_data(subjects, folds, output_dir, args):
         'preprocessing_config': {
             'img_size': args.img_size,
             'num_slices': args.num_slices,
+            'slice_axis_index': args.axis_idx,
+            'slice_axis_name': args.axis_name,
             'skull_strip': 'pre-applied',
             'smart_cropping': True,
             'center_padding': True,
@@ -512,6 +706,9 @@ def main(args):
         return
     
     oasis_dir = Path(args.oasis_dir)
+
+    args.axis_idx, args.axis_name = resolve_slice_axis(args.axis)
+    axis_output_dir = build_axis_output_dir(args.output_dir, args.axis_name)
     
     if not oasis_dir.exists():
         raise FileNotFoundError(f"OASIS directory not found: {oasis_dir}")
@@ -519,7 +716,9 @@ def main(args):
     print(f"\nInput directory: {oasis_dir}")
     print(f"Preprocessing options:")
     print(f"  - Target image size: {args.img_size}x{args.img_size}")
-    print(f"  - Number of center axial slices: {args.num_slices}")
+    print(f"  - Number of center slices: {args.num_slices}")
+    print(f"  - Slice axis: {args.axis_idx} ({args.axis_name})")
+    print(f"  - Axis-aware output directory: {axis_output_dir}")
     print(f"  - Skull stripping: PRE-APPLIED (data already skull-stripped)")
     print(f"  - Smart cropping: Enabled (removes black regions)")
     print(f"  - Center padding: Enabled (brain centered in frame)")
@@ -527,7 +726,7 @@ def main(args):
 
     # Load subjects and pre-defined folds from the preprocessed directory
     print("\n" + "-" * 70)
-    print("Loading subjects from pre-processed fold structure...")
+    print("Loading subjects and fold splits from preprocessed data...")
     print("-" * 70)
 
     all_subjects, folds = find_subjects_from_preprocessed_folds(oasis_dir, verbose=args.verbose)
@@ -542,6 +741,7 @@ def main(args):
     else:
         print("\n" + "=" * 70)
         print("Dry run completed - no files were processed/saved")
+        print(f"Axis-aware output directory would be: {axis_output_dir}")
         print("Remove --dry_run flag to process files")
         print("=" * 70)
 
@@ -554,8 +754,8 @@ if __name__ == "__main__":
     parser.add_argument(
         '--oasis_dir',
         type=str,
-        default='./data/processed_oasis_cv5_skullstrip',
-        help='Path to pre-processed skull-stripped directory with fold_X/{train,val,test}/{normal,alzheimer}/*.nii.gz structure'
+        default='./data/processed_oasis_3d_cv5_v2',
+        help='Path to preprocessed data. Preferred: _cache + split_info_with_val/folds.json. Legacy fold_X structure is also supported.'
     )
     
     parser.add_argument(
@@ -576,7 +776,14 @@ if __name__ == "__main__":
         '--num_slices',
         type=int,
         default=120,
-        help='Number of center axial slices to extract (default: 120)'
+        help='Number of center slices to extract (default: 120)'
+    )
+
+    parser.add_argument(
+        '--axis',
+        type=str,
+        default='axial',
+        help='Slice axis: 0/sagital, 1/coronal, 2/axial (default: axial)'
     )
     
     parser.add_argument(
