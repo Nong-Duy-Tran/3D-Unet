@@ -1,0 +1,6 @@
+conda activate alzheimer-baseline
+
+python "D:\YEAR 3\Lab\3D-Unet\data\preprocess_oasis_3d.py" --oasis_dir "D:\YEAR 3\Lab\3D-Unet\data\OASIS"
+python "D:\YEAR 3\Lab\3D-Unet\scripts\run_train_bat.py"
+
+tensorboard --logdir r"D:\YEAR 3\Lab\3D-Unet\logs\2d_cv5\fold_0"
