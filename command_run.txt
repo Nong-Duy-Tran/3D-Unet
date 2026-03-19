@@ -1,6 +1,11 @@
-conda activate alzheimer-baseline
+conda activate alzheimer
 
 python "D:\YEAR 3\Lab\3D-Unet\data\preprocess_oasis_3d.py" --oasis_dir "D:\YEAR 3\Lab\3D-Unet\data\OASIS"
 python "D:\YEAR 3\Lab\3D-Unet\scripts\run_train_bat.py"
 
 tensorboard --logdir r"D:\YEAR 3\Lab\3D-Unet\logs\2d_cv5\fold_0"
+
+flatpak run io.missioncenter.MissionCenter
+
+
+python -c "import torch; print(torch.cuda.is_available())"

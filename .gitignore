@@ -27,6 +27,7 @@ checkpoints/
 logs/
 evaluation_results/
 runs/
+wandb/
 *.pth
 *.pt
 

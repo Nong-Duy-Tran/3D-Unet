@@ -330,15 +330,25 @@ def validate(model, dataloader, criterion, device, epoch):
     return avg_loss, metrics, all_labels, all_preds, all_probs
 
 
+def resolve_num_slices(args):
+    """Resolve number of slices from per-view configuration."""
+    if args.view == 'axial':
+        return args.num_slices_axial
+    if args.view == 'coronal':
+        return args.num_slices_coronal
+    if args.view == 'sagittal':
+        return args.num_slices_sagittal
+    if args.view == 'all':
+        return args.num_slices_axial + args.num_slices_coronal + args.num_slices_sagittal
+    raise ValueError(f"Unsupported view: {args.view}")
+
+
 def main(args, fold):
     """Train a single fold"""
-    # Auto-compute num_slices from view unless explicitly overridden
-    view_slice_map = {'all': 240, 'axial': 80, 'coronal': 80, 'sagittal': 80}
-    if args.num_slices is None:
-        args.num_slices = view_slice_map[args.view]
+    num_slices = resolve_num_slices(args)
 
     print(f"\n{'='*70}")
-    print(f"Training Fold {fold} | View: {args.view.upper()} ({args.num_slices} slices)")
+    print(f"Training Fold {fold} | View: {args.view.upper()} ({num_slices} slices)")
     print(f"{'='*70}")
 
     set_seed(args.seed)
@@ -428,7 +438,7 @@ def main(args, fold):
     print("\nCreating model....")
     model = MyMobileNetMultiAttention(
         num_classes=2,
-        num_slices=args.num_slices,
+        num_slices=num_slices,
         embed_dim=args.embed_dim,
     )
     model = model.to(device)
@@ -614,7 +624,7 @@ def main(args, fold):
         val_precision = val_metrics['precision'] if not np.isnan(val_metrics['precision']) else 0.0
 
         current_score = (val_recall * 0.2) + (val_auc * 0.4) + (val_f1 * 0.4)
-        if current_score > best_score:
+        if val_loss < best_loss:
             best_loss = val_loss
             best_val_acc = val_metrics['accuracy']
             best_val_auc = val_auc  # Use already-validated AUC value
@@ -679,11 +689,15 @@ if __name__ == '__main__':
                        help='Root directory containing axial/, coronal/, sagittal/ JPEG folders')
     parser.add_argument('--fold', type=int, default=0,
                        help='Fold to train (0-4), or -1 for all folds')
-    parser.add_argument('--view', type=str, default='sagittal',
+    parser.add_argument('--view', type=str, default='axial',
                        choices=['all', 'axial', 'coronal', 'sagittal'],
-                       help='MRI view to use: all (80), axial (16), coronal (32), sagittal (32)')
-    parser.add_argument('--num_slices', type=int, default=None,
-                       help='Override number of slices (auto-computed from --view if not set)')
+                       help='MRI view to use (all = axial + coronal + sagittal)')
+    parser.add_argument('--num_slices_axial', type=int, default=80,
+                       help='Number of axial slices')
+    parser.add_argument('--num_slices_coronal', type=int, default=80,
+                       help='Number of coronal slices')
+    parser.add_argument('--num_slices_sagittal', type=int, default=80,
+                       help='Number of sagittal slices')
 
     # Model
     parser.add_argument('--embed_dim', type=int, default=128,
@@ -713,9 +727,9 @@ if __name__ == '__main__':
                        help='Step size for StepLR scheduler')
     parser.add_argument('--gamma', type=float, default=0.1,
                        help='Gamma for StepLR scheduler')
-    parser.add_argument('--use_class_weights', action='store_true', default=True,
+    parser.add_argument('--use_class_weights', action='store_true', default=False,
                        help='Use class weights for imbalanced data')
-    parser.add_argument('--label_smoothing', type=float, default=0.1,
+    parser.add_argument('--label_smoothing', type=float, default=0.0,
                        help='Label smoothing factor for CrossEntropyLoss')
     parser.add_argument('--use_amp', action='store_true', default=True,
                        help='Use automatic mixed precision training')
@@ -739,11 +753,11 @@ if __name__ == '__main__':
                        help='Resume from checkpoint')
     
     # Wandb parameters
-    parser.add_argument('--use_wandb', action='store_true',
+    parser.add_argument('--use_wandb', action='store_true', default=True,
                        help='Use Weights & Biases for logging')
     parser.add_argument('--wandb_project', type=str, default='alzheimer-2d-classification',
                        help='Wandb project name')
-    parser.add_argument('--exp_name', type=str, default='2d_cnn_attention',
+    parser.add_argument('--exp_name', type=str, default='2d_cnn_attention_mobilenet_axial',
                        help='Experiment name')
     
     args = parser.parse_args()

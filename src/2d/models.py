@@ -193,6 +193,7 @@ class MyResNetMultiAttention(nn.Module):
         # ------------------------------------------------------------------
         self.proj = nn.Linear(self.feature_dim, embed_dim)
 
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_slices, embed_dim))
         self.attn = nn.MultiheadAttention(
             embed_dim=embed_dim,
             num_heads=8,
@@ -239,6 +240,8 @@ class MyResNetMultiAttention(nn.Module):
         # Slice embedding projection
         # --------------------------------------------------------------
         features = self.proj(features)       # (B, S, embed_dim)
+
+        feature = features + self.pos_embed
 
         # --------------------------------------------------------------
         # Multi-head self-attention across slices
