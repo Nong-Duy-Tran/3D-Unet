@@ -105,6 +105,30 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
                 return torch.tensor(0.0, device=preds.device)
             return (2 * tp) / denom
 
+        def _macro_auc_ovr(self, probs: np.ndarray, targets: np.ndarray) -> float:
+            try:
+                from sklearn.metrics import roc_auc_score
+            except Exception:
+                return 0.0
+
+            if probs.ndim != 2 or probs.shape[0] == 0:
+                return 0.0
+
+            aucs: list[float] = []
+            for class_idx in range(probs.shape[1]):
+                y_bin = (targets == class_idx).astype(np.int32)
+                if y_bin.min() == y_bin.max():
+                    continue
+                class_scores = probs[:, class_idx]
+                if not np.isfinite(class_scores).all():
+                    valid = np.isfinite(class_scores)
+                    y_bin = y_bin[valid]
+                    class_scores = class_scores[valid]
+                    if y_bin.size == 0 or y_bin.min() == y_bin.max():
+                        continue
+                aucs.append(float(roc_auc_score(y_bin, class_scores)))
+            return float(np.mean(aucs)) if aucs else 0.0
+
         def _batch_auc(self, probs: torch.Tensor, targets: torch.Tensor) -> float | None:
             if probs.shape[-1] != 2:
                 return None
@@ -132,24 +156,39 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             logits = torch.nan_to_num(logits, nan=0.0, posinf=20.0, neginf=-20.0)
             return logits.clamp(min=-20.0, max=20.0)
 
+        def _negative_class_index(self) -> int:
+            classes = [str(x).strip().lower() for x in list(getattr(self.cfg.data, "classes", []) or [])]
+            negative_aliases = {"normal", "nonad", "cn", "control", "healthy", "negative", "cdr_0", "cdr0"}
+            for idx, name in enumerate(classes):
+                if name in negative_aliases:
+                    return idx
+            return 0
+
         def _specificity_from_confusion_matrix(self, cm: Any) -> float:
             cm = torch.as_tensor(cm, dtype=torch.float32)
-            total = cm.sum()
+            if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
+                return 0.0
+
+            total = float(cm.sum().item())
             if total <= 0:
                 return 0.0
 
+            if cm.shape[0] == 2:
+                neg_idx = self._negative_class_index()
+                tn = float(cm[neg_idx, neg_idx].item())
+                fp = float((cm[neg_idx, :].sum() - cm[neg_idx, neg_idx]).item())
+                denom = tn + fp
+                return 0.0 if denom <= 0 else float(tn / denom)
+
             specificities: list[float] = []
             for i in range(cm.shape[0]):
-                tp = cm[i, i]
-                fp = cm[:, i].sum() - tp
-                fn = cm[i, :].sum() - tp
+                tp = float(cm[i, i].item())
+                fp = float((cm[:, i].sum() - cm[i, i]).item())
+                fn = float((cm[i, :].sum() - cm[i, i]).item())
                 tn = total - tp - fp - fn
                 denom = tn + fp
-                if denom <= 0:
-                    specificities.append(0.0)
-                else:
-                    specificities.append(float((tn / denom).item()))
-            return float(sum(specificities) / len(specificities))
+                specificities.append(0.0 if denom <= 0 else float(tn / denom))
+            return float(sum(specificities) / len(specificities)) if specificities else 0.0
 
         def _shared_step(self, batch: Any, stage: str) -> STEP_OUTPUT:
             x, y = batch
@@ -242,10 +281,7 @@ def build_lightning_module(cfg: DictConfig, class_weights: "torch.Tensor | None"
             f1_epoch = f1_score(targets, preds, zero_division=0, average="macro")
             acc_epoch = accuracy_score(targets, preds)
             if probs is not None and len(set(targets.tolist())) > 1:
-                if probs.shape[1] > 2:
-                    auc_epoch = roc_auc_score(targets, probs, multi_class="ovr", average="macro")
-                else:
-                    auc_epoch = roc_auc_score(targets, probs[:, 1])
+                auc_epoch = self._macro_auc_ovr(probs, targets)
             else:
                 auc_epoch = 0.0
             cm = confusion_matrix(targets, preds, labels=list(range(int(probs.shape[1])))) if probs is not None else None

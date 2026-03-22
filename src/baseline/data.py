@@ -15,6 +15,62 @@ from scipy.ndimage import rotate, zoom
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 
+def _strictly_increasing_indices(indices: np.ndarray, total: int) -> list[int]:
+    """Round/clamp a monotonic float index sequence to unique valid integers."""
+    if indices.ndim != 1:
+        raise ValueError("indices must be 1D")
+    if total <= 0:
+        raise ValueError("total must be > 0")
+
+    idx = np.rint(indices).astype(np.int64)
+    idx = np.clip(idx, 0, total - 1)
+
+    for i in range(1, len(idx)):
+        idx[i] = max(idx[i], idx[i - 1] + 1)
+
+    if len(idx) and idx[-1] > total - 1:
+        overflow = idx[-1] - (total - 1)
+        idx = idx - overflow
+        for i in range(len(idx) - 2, -1, -1):
+            idx[i] = min(idx[i], idx[i + 1] - 1)
+
+    if len(idx) and idx[0] < 0:
+        underflow = -idx[0]
+        idx = idx + underflow
+        for i in range(1, len(idx)):
+            idx[i] = max(idx[i], idx[i - 1] + 1)
+
+    idx = np.clip(idx, 0, total - 1)
+    for i in range(1, len(idx)):
+        if idx[i] <= idx[i - 1]:
+            idx[i] = idx[i - 1] + 1
+    if len(idx) and idx[-1] > total - 1:
+        idx = np.arange(total - len(idx), total, dtype=np.int64)
+    return idx.tolist()
+
+
+def _center_biased_indices(total: int, num_slices: int, gamma: float = 1.75) -> list[int]:
+    """
+    Deterministically sample indices with higher density near the center and
+    sparser coverage toward the edges.
+
+    The mapping uses a symmetric power warp on uniformly spaced points in
+    [-1, 1], then converts them back to slice indices. This keeps all samples ordered,
+    symmetric, and fixed in count.
+    """
+    if total <= 0:
+        raise ValueError("total must be > 0")
+    if num_slices <= 0:
+        return []
+    if num_slices >= total:
+        return list(range(total))
+
+    u = np.linspace(-1.0, 1.0, num_slices, dtype=np.float64)
+    warped = np.sign(u) * np.power(np.abs(u), float(gamma))
+    positions = (warped + 1.0) * 0.5 * float(total - 1)
+    return _strictly_increasing_indices(positions, total)
+
+
 class MRIClassificationDataset(Dataset):
     """
     Dataset for MRI classification from NIfTI files
@@ -195,6 +251,8 @@ class MRIClassificationDataset(Dataset):
             start = max(0, center - half)
             indices = list(range(start, start + self.num_slices))
             return [min(size - 1, max(0, i)) for i in indices]
+        if self.slice_strategy == "center_bias":
+            return _center_biased_indices(size, self.num_slices)
         # uniform
         return [int(round(i)) for i in np.linspace(0, size - 1, self.num_slices)]
 
@@ -352,6 +410,8 @@ class MRIVolumeJPGDataset(Dataset):
             start = max(0, center - half)
             indices = list(range(start, start + self.num_slices))
             indices = [min(total - 1, max(0, i)) for i in indices]
+        elif self.slice_strategy == "center_bias":
+            indices = _center_biased_indices(total, self.num_slices)
         else:
             indices = [int(round(i)) for i in np.linspace(0, total - 1, self.num_slices)]
 
@@ -497,6 +557,8 @@ class MRIVolumeJPG25DDataset(Dataset):
             start = max(0, center - half)
             indices = list(range(start, start + self.num_slices))
             return [min(total - 1, max(0, i)) for i in indices]
+        if self.slice_strategy == "center_bias":
+            return _center_biased_indices(total, self.num_slices)
         return [int(round(i)) for i in np.linspace(0, total - 1, self.num_slices)]
 
     def _load_windows(self, slice_paths: list[str], center_indices: list[int]) -> np.ndarray:

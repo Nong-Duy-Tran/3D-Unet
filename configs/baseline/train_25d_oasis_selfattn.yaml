@@ -3,9 +3,9 @@ seed: 42
 data:
   format: jpg
   fold_index: 0
-  task_name: ad_vs_nonad
-  data_version: v3  # must match the suffix in data_root: processed_oasis_2d_cv5_v3
-  data_root: "data/oasis_c2/processed_oasis_2d_cv5_${data.data_version}"
+  task_name: c1_normal_vs_abnormal
+  data_version: v2
+  data_root: "data/oasis_c1/processed_oasis_2d_cv5_${data.data_version}"
   train_dir: "${data.data_root}/axial/fold_${data.fold_index}/train"
   # If fold_${data.fold_index}/val does not exist, training creates an internal val split from train/.
   val_dir: "${data.data_root}/axial/fold_${data.fold_index}/val"
@@ -13,7 +13,7 @@ data:
   use_validation: true
   internal_val_ratio: 0.2
   internal_val_seed: 42
-  classes: [nonad, ad]
+  classes: [normal, abnormal]
   jpg_view: axial
   jpg_mode: 2p5d
   image_size: 224
@@ -21,8 +21,8 @@ data:
   num_workers: 4
   num_slices: 50
   window_size: 5
-  slice_strategy_train: uniform
-  slice_strategy_val: uniform
+  slice_strategy_train: center_bias
+  slice_strategy_val: center_bias
   normalize: true
 
 model:
@@ -69,7 +69,7 @@ training:
     name: cross_entropy
     label_smoothing: 0.05
   accelerator: gpu
-  devices: [0]
+  devices: [1]
   precision: 32
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
@@ -96,7 +96,7 @@ logging:
     enabled: true
     project: alzheimer-baseline
     name: null
-    group: ${model.timm_name}_pe_basicattn_${data.jpg_view}_${data.task_name}_${data.data_version}
+    group: ${model.timm_name}_pe_basicattn_centerbias_${data.jpg_view}_${data.task_name}_${data.data_version}
     tags:
       - 25d
       - axial
@@ -105,12 +105,13 @@ logging:
       - resnet18
       - posenc
       - basic-attn
+      - center-bias
       - ${data.task_name}
       - ${data.data_version}
 
 checkpoint:
-  dir: checkpoints/25d/resnet18_pe_basicattn_50sl_5folds_${data.task_name}_${data.data_version}
+  dir: checkpoints/25d/resnet18_pe_basicattn_centerbias_50sl_5folds_${data.task_name}_${data.data_version}
   monitor: val/loss
   mode: min
 
-output_dir: outputs/25d/resnet18_pe_basicattn_50sl_5folds_${data.task_name}_${data.data_version}
+output_dir: outputs/25d/resnet18_pe_basicattn_centerbias_50sl_5folds_${data.task_name}_${data.data_version}

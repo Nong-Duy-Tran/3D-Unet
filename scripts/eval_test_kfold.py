@@ -60,6 +60,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional directory to save metrics. Default: <run_dir>/test_eval",
     )
+    parser.add_argument(
+        "--data_root",
+        type=str,
+        default=None,
+        help=(
+            "Optional override for dataset root containing <view>/fold_*/{train,val,test}. "
+            "Useful when checkpoint hyperparameters store stale data paths."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -102,15 +111,23 @@ def load_checkpoint_model(ckpt_path: Path, device: torch.device):
     return model, cfg
 
 
-def infer_test_dir(cfg) -> str:
+def infer_test_dir(cfg, data_root: str | None = None) -> str:
     val_dir = Path(str(cfg.data.val_dir))
     if val_dir.name != "val":
         raise ValueError(f"Expected val_dir to end with 'val', got: {val_dir}")
+
+    if data_root:
+        root = Path(data_root)
+        if not root.is_absolute():
+            root = (repo_root / root).resolve()
+        suffix = Path(*val_dir.parts[-3:]) if len(val_dir.parts) >= 3 else Path(val_dir.name)
+        return str(root / suffix.parent / "test")
+
     return str(val_dir.parent / "test")
 
 
-def build_test_loader(cfg, batch_size: int | None, num_workers: int | None):
-    test_dir = infer_test_dir(cfg)
+def build_test_loader(cfg, batch_size: int | None, num_workers: int | None, data_root: str | None = None):
+    test_dir = infer_test_dir(cfg, data_root=data_root)
     _, test_loader = get_dataloaders(
         train_dir=test_dir,
         val_dir=test_dir,
@@ -143,11 +160,66 @@ def build_test_loader(cfg, batch_size: int | None, num_workers: int | None):
     return test_loader, test_dir
 
 
-def evaluate_model(model, loader, device: torch.device) -> dict[str, Any]:
+def negative_class_index(classes: list[str] | None) -> int:
+    if not classes:
+        return 0
+    negative_aliases = {"normal", "nonad", "cn", "control", "healthy", "negative", "cdr_0", "cdr0"}
+    normalized = [str(x).strip().lower() for x in classes]
+    for idx, name in enumerate(normalized):
+        if name in negative_aliases:
+            return idx
+    return 0
+
+
+def specificity_from_confusion_matrix(cm: np.ndarray, classes: list[str] | None = None) -> float:
+    cm = np.asarray(cm, dtype=np.float32)
+    if cm.ndim != 2 or cm.shape[0] != cm.shape[1]:
+        return 0.0
+
+    total = float(cm.sum())
+    if total <= 0:
+        return 0.0
+
+    if cm.shape[0] == 2:
+        neg_idx = negative_class_index(classes)
+        tn = float(cm[neg_idx, neg_idx])
+        fp = float(cm[neg_idx, :].sum() - cm[neg_idx, neg_idx])
+        denom = tn + fp
+        return 0.0 if denom <= 0 else float(tn / denom)
+
+    specificities: list[float] = []
+    for i in range(cm.shape[0]):
+        tp = float(cm[i, i])
+        fp = float(cm[:, i].sum() - tp)
+        fn = float(cm[i, :].sum() - tp)
+        tn = total - tp - fp - fn
+        denom = tn + fp
+        specificities.append(0.0 if denom <= 0 else float(tn / denom))
+    return float(np.mean(specificities)) if specificities else 0.0
+
+
+def evaluate_model(model, loader, device: torch.device, cfg) -> dict[str, Any]:
     try:
         from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
     except Exception as exc:  # pragma: no cover
         raise ImportError("scikit-learn is required for test evaluation.") from exc
+
+    def macro_auc_ovr(y_true: np.ndarray, probs: np.ndarray) -> float | None:
+        if probs.ndim != 2 or probs.shape[0] == 0 or len(set(y_true.tolist())) <= 1:
+            return None
+        aucs: list[float] = []
+        for class_idx in range(probs.shape[1]):
+            y_bin = (y_true == class_idx).astype(np.int32)
+            if y_bin.min() == y_bin.max():
+                continue
+            class_scores = probs[:, class_idx]
+            valid = np.isfinite(class_scores)
+            y_bin = y_bin[valid]
+            class_scores = class_scores[valid]
+            if y_bin.size == 0 or y_bin.min() == y_bin.max():
+                continue
+            aucs.append(float(roc_auc_score(y_bin, class_scores)))
+        return float(np.mean(aucs)) if aucs else None
 
     logits_all: list[torch.Tensor] = []
     targets_all: list[torch.Tensor] = []
@@ -173,21 +245,17 @@ def evaluate_model(model, loader, device: torch.device) -> dict[str, Any]:
     metrics["recall_macro"] = float(recall_score(y_true, preds, average="macro", zero_division=0))
     metrics["f1_macro"] = float(f1_score(y_true, preds, average="macro", zero_division=0))
 
-    if probs.shape[1] == 2 and len(set(y_true.tolist())) > 1:
-        metrics["auc"] = float(roc_auc_score(y_true, probs[:, 1]))
-    elif probs.shape[1] > 2 and len(set(y_true.tolist())) > 1:
-        metrics["auc"] = float(roc_auc_score(y_true, probs, multi_class="ovr", average="macro"))
-    else:
-        metrics["auc"] = None
+    metrics["auc"] = macro_auc_ovr(y_true, probs)
 
     cm = confusion_matrix(y_true, preds, labels=list(range(probs.shape[1])))
+    metrics["specificity"] = specificity_from_confusion_matrix(cm, list(getattr(cfg.data, "classes", []) or []))
     metrics["confusion_matrix"] = cm.tolist()
     return metrics
 
 
 def aggregate_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {"num_folds": len(results)}
-    for key in ("acc", "precision_macro", "recall_macro", "f1_macro", "auc"):
+    for key in ("acc", "precision_macro", "recall_macro", "specificity", "f1_macro", "auc"):
         values = [float(item[key]) for item in results if item.get(key) is not None]
         if not values:
             summary[key] = None
@@ -222,8 +290,8 @@ def main() -> int:
         fold_dir = run_dir / f"fold_{fold_idx}"
         ckpt_path = find_best_checkpoint(fold_dir)
         model, cfg = load_checkpoint_model(ckpt_path, device)
-        test_loader, test_dir = build_test_loader(cfg, args.batch_size, args.num_workers)
-        metrics = evaluate_model(model, test_loader, device)
+        test_loader, test_dir = build_test_loader(cfg, args.batch_size, args.num_workers, args.data_root)
+        metrics = evaluate_model(model, test_loader, device, cfg)
         metrics["fold"] = fold_idx
         metrics["checkpoint"] = str(ckpt_path.relative_to(repo_root))
         metrics["test_dir"] = test_dir
@@ -238,6 +306,7 @@ def main() -> int:
         print(f"precision   : {metrics['precision_macro']:.4f}")
         print(f"recall      : {metrics['recall_macro']:.4f}")
         print(f"f1          : {metrics['f1_macro']:.4f}")
+        print(f"specificity : {metrics['specificity']:.4f}")
         print(f"auc         : {metrics['auc'] if metrics['auc'] is None else f'{metrics['auc']:.4f}'}")
         print(f"cm          : {metrics['confusion_matrix']}")
 
@@ -257,6 +326,7 @@ def main() -> int:
         "acc",
         "precision_macro",
         "recall_macro",
+        "specificity",
         "f1_macro",
         "auc",
         "cm_00",
@@ -277,6 +347,7 @@ def main() -> int:
                 "acc": item["acc"],
                 "precision_macro": item["precision_macro"],
                 "recall_macro": item["recall_macro"],
+                "specificity": item["specificity"],
                 "f1_macro": item["f1_macro"],
                 "auc": item["auc"],
                 "cm_00": int(cm[0, 0]) if cm.shape[0] > 0 and cm.shape[1] > 0 else "",
