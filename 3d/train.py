@@ -62,6 +62,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
             labels_onehot = torch.zeros_like(outputs)
             labels_onehot.scatter_(1, labels.unsqueeze(1), 1)
             loss = criterion(outputs, labels_onehot)
+        elif isinstance(criterion, nn.BCEWithLogitsLoss):
+            labels_bce = labels.float()
+            logits = outputs.squeeze(1) if outputs.ndim == 2 and outputs.size(1) == 1 else outputs
+            loss = criterion(logits, labels_bce)
         else:
             loss = criterion(outputs, labels)
         
@@ -70,12 +74,18 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         
         running_loss += loss.item()
         
-        probs = torch.softmax(outputs, dim=1)
-        preds = torch.argmax(outputs, dim=1)
+        if isinstance(criterion, nn.BCEWithLogitsLoss):
+            logits = outputs.squeeze(1) if outputs.ndim == 2 and outputs.size(1) == 1 else outputs
+            probs_pos = torch.sigmoid(logits)
+            preds = (probs_pos >= 0.5).long()
+            all_probs.extend(probs_pos.detach().cpu().numpy())
+        else:
+            probs = torch.softmax(outputs, dim=1)
+            preds = torch.argmax(outputs, dim=1)
+            all_probs.extend(probs[:, 1].detach().cpu().numpy())
         
         all_preds.extend(preds.cpu().numpy())
         all_labels.extend(labels.cpu().numpy())
-        all_probs.extend(probs[:, 1].detach().cpu().numpy())
         
         pbar.set_postfix({'loss': loss.item()})
     
@@ -114,17 +124,27 @@ def validate(model, dataloader, criterion, device, epoch):
                 labels_onehot = torch.zeros_like(outputs)
                 labels_onehot.scatter_(1, labels.unsqueeze(1), 1)
                 loss = criterion(outputs, labels_onehot)
+            elif isinstance(criterion, nn.BCEWithLogitsLoss):
+                labels_bce = labels.float()
+                logits = outputs.squeeze(1) if outputs.ndim == 2 and outputs.size(1) == 1 else outputs
+                loss = criterion(logits, labels_bce)
             else:
                 loss = criterion(outputs, labels)
             
             running_loss += loss.item()
             
-            probs = torch.softmax(outputs, dim=1)
-            preds = torch.argmax(outputs, dim=1)
+            if isinstance(criterion, nn.BCEWithLogitsLoss):
+                logits = outputs.squeeze(1) if outputs.ndim == 2 and outputs.size(1) == 1 else outputs
+                probs_pos = torch.sigmoid(logits)
+                preds = (probs_pos >= 0.5).long()
+                all_probs.extend(probs_pos.cpu().numpy())
+            else:
+                probs = torch.softmax(outputs, dim=1)
+                preds = torch.argmax(outputs, dim=1)
+                all_probs.extend(probs[:, 1].cpu().numpy())
             
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs[:, 1].cpu().numpy())
             
             pbar.set_postfix({'loss': loss.item()})
     
@@ -161,25 +181,12 @@ def main(args):
     
     # Initialize wandb if enabled
     if args.use_wandb:
-        wandb_config = {
-            'model': args.model,
-            'epochs': args.epochs,
-            'batch_size': args.batch_size,
-            'learning_rate': args.lr,
-            'weight_decay': args.weight_decay,
-            'loss_fn': args.loss_fn,
-            'use_class_weights': args.use_class_weights,
-            'target_shape': args.target_shape,
-            'base_features': args.base_features,
-            'feature_size': args.feature_size,
-        }
-        
         wandb.init(
-            project="Alzheimer Classification MRI",
-            name=args.model_name,
-            config=wandb_config,
-            tags=[args.model, args.loss_fn],
-            notes=f"Training {args.model} model for Alzheimer's classification"
+            project=args.wandb_project,
+            name=f"{args.exp_name}_fold{args.fold}",
+            config=vars(args),
+            reinit=True,
+            group=args.wandb_group,
         )
     
     # TensorBoard
@@ -200,11 +207,11 @@ def main(args):
     print("\nInitializing model...")
     model_kwargs = {
         'in_channels': 1,
-        'num_classes': 2,
+        'num_classes': 1 if args.loss_fn == 'bce' else 2,
     }
     
     # Add model-specific parameters
-    if args.model == 'swinunet':
+    if args.model_name == 'swinunet':
         # SwinUNet uses different parameters
         model_kwargs['img_size'] = tuple(args.target_shape)
         model_kwargs['feature_size'] = args.feature_size
@@ -215,7 +222,7 @@ def main(args):
         # CNN models use base_features
         model_kwargs['base_features'] = args.base_features
     
-    model = get_model(model_name=args.model, **model_kwargs)
+    model = get_model(model_name=args.model_name, **model_kwargs)
     model = model.to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
@@ -374,12 +381,14 @@ if __name__ == "__main__":
                        help='Training data directory')
     parser.add_argument('--val_dir', type=str, default='../data/val',
                        help='Validation data directory')
+    parser.add_argument('--fold', type=int, default=0,
+                       help='Fold index for tracking/logging')
     parser.add_argument('--use_hdf5', action='store_true',
                        help='Use HDF5 dataset format')
     
     # Model
-    parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'compact', 'unet', 'resunet', 'swinunet'],
+    parser.add_argument('--model_name', type=str, default='simple',
+                       choices=['simple', 'compact', 'unet', 'resunet', 'swinunet', 'brainiac'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
@@ -414,14 +423,18 @@ if __name__ == "__main__":
     # Output
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints',
                        help='Checkpoint directory')
-    parser.add_argument('--model_name', type=str, default='best_model',
-                       help='Model name for saving')
     parser.add_argument('--log_dir', type=str, default='logs',
                        help='Log directory')
     
     # Wandb
     parser.add_argument('--use_wandb', action='store_true',
                        help='Use Weights & Biases for logging')
+    parser.add_argument('--wandb_project', type=str, default='alzheimer-3d-classification',
+                       help='Wandb project name')
+    parser.add_argument('--exp_name', type=str, default='3d_model',
+                       help='Experiment name')
+    parser.add_argument('--wandb_group', type=str, default=None,
+                       help='Group name')
     
     # Reproducibility
     parser.add_argument('--seed', type=int, default=42,

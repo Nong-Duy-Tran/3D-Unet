@@ -5,7 +5,7 @@ Adapts the segmentation U-Net for classification tasks
 import torch
 import torch.nn as nn
 from pytorch3dunet.unet3d.model import UNet3D, ResidualUNet3D
-from monai.networks.nets import SwinUNETR
+from monai.networks.nets import SwinUNETR, ViT, UNETR
 
 class UNet3DClassifier(nn.Module):
     """
@@ -314,6 +314,109 @@ class SwinUNet3DClassifier(nn.Module):
         return logits
 
 
+class PretrainViTBrainIAC(nn.Module):
+    def __init__(
+            self, simclr_ckpt_path="/home/ntq/Projects/longtd/MRI/checkpoints/vit_mci.ckpt", 
+            num_classes=1, is_freezed=True, **kwargs
+        ):
+        super(PretrainViTBrainIAC, self).__init__()
+        
+        #  ViT backbone
+        self.backbone = ViT(
+            in_channels=1,  #  single channel input
+            img_size=(96,96,96),  
+            patch_size=(16, 16, 16),
+            hidden_size=768,  
+            mlp_dim=3072,
+            num_layers=12,
+            num_heads=12, 
+            save_attn=True,
+        )
+        
+        # Load pretrained weights from SimCLR checkpoint
+        ckpt = torch.load(simclr_ckpt_path, map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("state_dict", ckpt)
+        
+        # Extract only backbone weights 
+        backbone_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("model.backbone."):
+                # Remove "backbone." prefix
+                new_key = key[24:]  # len("backbone.") = 9
+                backbone_state_dict[new_key] = value
+            # print(key)
+
+        if is_freezed:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
+            print("INFO: Backbone weights FROZEN.")
+
+        # Load the backbone weights
+        self.backbone.load_state_dict(backbone_state_dict, strict=True)
+        print("Backbone weights loaded!!")
+
+        self.classifier = nn.Linear(768, num_classes)
+        self.drop_out = nn.Dropout(p=0.2)
+
+    def forward(self, x):
+        # Get features from ViT backbone
+        features = self.backbone(x)
+        
+        # features[0][:, 0] gets CLS token: [batch_size, hidden_dim]
+        cls_token = features[0][:, 0]  # Shape: [batch_size, 768]
+
+        x = self.drop_out(cls_token)
+
+        x = self.classifier(x)
+        
+        # x = x.squeeze(1)
+
+        return x
+
+
+
+class ViTUNETRSegmentationModel(nn.Module):
+    def __init__(self, simclr_ckpt_path, img_size=(96,96,96), in_channels=1, out_channels=1):
+        super().__init__()
+        # Load ViT backbone
+        self.vit = ViT(
+            in_channels=in_channels,
+            img_size=img_size,
+            patch_size=(16,16,16),
+            hidden_size=768,
+            mlp_dim=3072,
+            num_layers=12,
+            num_heads=12,
+            save_attn=False,
+        )
+        # Load SimCLR weights
+        ckpt = torch.load(simclr_ckpt_path, map_location='cpu')
+        state_dict = ckpt.get('state_dict', ckpt)
+        backbone_state_dict = {k[9:]: v for k, v in state_dict.items() if k.startswith('backbone.')}
+        self.vit.load_state_dict(backbone_state_dict, strict=True)
+        # UNETR decoder
+        self.unetr = UNETR(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            img_size=img_size,
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            norm_name='instance',
+            res_block=True,
+            dropout_rate=0.0
+        )
+        
+        # Transfer ViT weights to UNETR encoder
+        self.unetr.vit.load_state_dict(self.vit.state_dict(), strict=True)
+        print("="*10)
+        print("ViT loaded from scratch")
+        print("="*10)
+    def forward(self, x):
+        return self.unetr(x) 
+
+
 def get_model(model_name='simple', **kwargs):
     """
     Factory function to create classification model
@@ -335,6 +438,8 @@ def get_model(model_name='simple', **kwargs):
         return UNet3DClassifier(use_residual=True, **kwargs)
     elif model_name == 'swinunet':
         return SwinUNet3DClassifier(**kwargs)
+    elif model_name == 'brainiac':
+        return PretrainViTBrainIAC(**kwargs)
     else:
         raise ValueError(f"Unknown model: {model_name}. Choose from: simple, compact, unet, resunet, swinunet")
 
@@ -374,19 +479,10 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model_unet.parameters())
     print(f"Total parameters (UNet3D): {total_params:,}")
 
-    print("\nTesting SwinUNet3D Classifier...")
-    model_swin = SwinUNet3DClassifier(
-        img_size=(64, 64, 64),  # Match test input size
-        in_channels=1, 
-        num_classes=2, 
-        feature_size=24,  # Smaller for testing
-        depths=(2, 2, 2, 2),
-        num_heads=(3, 6, 12, 24),
-        window_size=4  # Smaller window for 64x64x64 input
-    )
-    model_swin = model_swin.to(device)
-    output = model_swin(x)
+
+    x = torch.randn(4, 1, 96, 96, 96).to(device)
+    segment_model = PretrainViTBrainIAC().to(device)
+    output = segment_model(x)
     print(f"Output shape: {output.shape}")
-    
-    total_params = sum(p.numel() for p in model_swin.parameters())
-    print(f"Total parameters (SwinUNet3D): {total_params:,}")
+    total_params = sum(p.numel() for p in segment_model.parameters())
+    print(f"Total parameters (PretrainViTBrainIAC): {total_params:,}")

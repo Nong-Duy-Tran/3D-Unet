@@ -173,7 +173,8 @@ def main(args, fold):
             project=args.wandb_project,
             name=f"{args.exp_name}_fold{fold}",
             config=vars(args),
-            reinit=True
+            reinit=True,
+            group=args.wandb_group,
         )
     
     # Create dataloaders
@@ -248,6 +249,8 @@ def main(args, fold):
     elif args.scheduler == 'plateau':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
                                                          factor=0.5, patience=10)
+    elif args.scheduler == 'exponetial':
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
     else:
         scheduler = None
     
@@ -468,7 +471,7 @@ if __name__ == '__main__':
     parser.add_argument('--optimizer', type=str, default='adamw', choices=['adam', 'adamw', 'sgd'],
                        help='Optimizer')
     parser.add_argument('--scheduler', type=str, default='plateau', 
-                       choices=['cosine', 'step', 'plateau', 'none'],
+                       choices=['cosine', 'step', 'plateau', 'exponetial', 'none'],
                        help='Learning rate scheduler')
     parser.add_argument('--step_size', type=int, default=30,
                        help='Step size for StepLR scheduler')
@@ -502,6 +505,8 @@ if __name__ == '__main__':
                        help='Wandb project name')
     parser.add_argument('--exp_name', type=str, default='2d_cnn_attention',
                        help='Experiment name')
+    parser.add_argument('--wandb_group', type=str, default=None,
+                       help='Group name')
     
     args = parser.parse_args()
     
