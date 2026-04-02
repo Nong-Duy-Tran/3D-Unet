@@ -13,7 +13,7 @@ from sklearn.metrics import (
 )
 
 from model import get_model
-from dataset import get_dataloaders
+from dataset import get_dataloader
 from util.utils import plot_confusion_matrix, plot_roc_curve, load_checkpoint
 
 
@@ -90,9 +90,10 @@ def main(args):    # Set seed for reproducibility
     
     # Load data
     print(f"\nLoading data from {args.data_dir}...")
-    _, val_loader = get_dataloaders(
-        train_dir=args.data_dir,  # Dummy, won't be used
-        val_dir=args.data_dir,
+    val_loader = get_dataloader(
+        data_dir=args.data_dir,
+        fold=args.fold,
+        split='test',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         target_shape=tuple(args.target_shape),
@@ -149,10 +150,11 @@ if __name__ == "__main__":
     
     parser.add_argument('--checkpoint', type=str, required=True,
                        help='Path to model checkpoint')
+    parser.add_argument('--fold', type=int, default=0, help='Fold number (0-4)')
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to evaluation data directory')
     parser.add_argument('--model', type=str, default='simple',
-                       choices=['simple', 'unet', 'resunet', 'swinunet', 'compact'],
+                       choices=['simple', 'unet', 'resunet', 'swinunet', 'compact', 'brainiac'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features (for CNN models)')

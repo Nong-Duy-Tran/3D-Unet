@@ -9,34 +9,41 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, roc_auc_score
 
 
-def save_checkpoint(model, optimizer, epoch, best_val_acc, filepath):
+def save_checkpoint(model, optimizer, epoch, best_val_acc, filepath, best_val_loss=None, scheduler=None):
     """Save model checkpoint"""
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict() if optimizer else None,
         'best_val_acc': best_val_acc
     }
+    if best_val_loss is not None:
+        checkpoint['best_val_loss'] = best_val_loss
+    if scheduler is not None:
+        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
     
     torch.save(checkpoint, filepath)
     print(f"Checkpoint saved to {filepath}")
 
 
-def load_checkpoint(model, optimizer, filepath, device='cuda'):
+def load_checkpoint(model, optimizer, filepath, device='cuda', scheduler=None):
     """Load model checkpoint"""
     checkpoint = torch.load(filepath, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    if optimizer is not None:
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint and checkpoint['optimizer_state_dict'] is not None:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['best_val_loss']
+    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    epoch = checkpoint.get('epoch', 0)
+    best_val_acc = checkpoint.get('best_val_acc', 0.0)
+    best_val_loss = checkpoint.get('best_val_loss', float('inf'))
     
     print(f"Checkpoint loaded from {filepath}")
-    print(f"Epoch: {epoch}, Best val loss: {best_val_loss:.4f}")
+    print(f"Epoch: {epoch}, Best val acc: {best_val_acc:.4f}")
     
-    return epoch, best_val_loss
+    return epoch, best_val_loss, best_val_acc
 
 
 def plot_confusion_matrix(y_true, y_pred, classes=['Normal', 'Alzheimer'], save_path=None):

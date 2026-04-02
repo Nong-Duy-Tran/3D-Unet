@@ -16,7 +16,7 @@ import wandb
 from dotenv import load_dotenv
 
 from model import get_model
-from dataset import get_dataloaders
+from dataset import get_dataloader
 from utils import (
     save_checkpoint, load_checkpoint, plot_confusion_matrix,
     plot_roc_curve, plot_training_curves, get_class_weights
@@ -91,11 +91,19 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     
     avg_loss = running_loss / len(dataloader)
     
+    # Calculate specificity
+    all_labels_arr = np.array(all_labels)
+    all_preds_arr = np.array(all_preds)
+    tn = np.sum((all_labels_arr == 0) & (all_preds_arr == 0))
+    fp = np.sum((all_labels_arr == 0) & (all_preds_arr == 1))
+    specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+    
     # Calculate metrics
     metrics = {
         'accuracy': accuracy_score(all_labels, all_preds),
         'precision': precision_score(all_labels, all_preds, zero_division=0),
         'recall': recall_score(all_labels, all_preds, zero_division=0),
+        'specificity': specificity,
         'f1': f1_score(all_labels, all_preds, zero_division=0),
         'auc': roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.0
     }
@@ -150,10 +158,18 @@ def validate(model, dataloader, criterion, device, epoch):
     
     avg_loss = running_loss / len(dataloader)
     
+    # Calculate specificity
+    all_labels_arr = np.array(all_labels)
+    all_preds_arr = np.array(all_preds)
+    tn = np.sum((all_labels_arr == 0) & (all_preds_arr == 0))
+    fp = np.sum((all_labels_arr == 0) & (all_preds_arr == 1))
+    specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+    
     metrics = {
         'accuracy': accuracy_score(all_labels, all_preds),
         'precision': precision_score(all_labels, all_preds, zero_division=0),
         'recall': recall_score(all_labels, all_preds, zero_division=0),
+        'specificity': specificity,
         'f1': f1_score(all_labels, all_preds, zero_division=0),
         'auc': roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.0
     }
@@ -173,8 +189,11 @@ def main(args):
     print(f"Set random seed to: {args.seed}")
     
     # Setup
-    os.makedirs(args.checkpoint_dir, exist_ok=True)
-    os.makedirs(args.log_dir, exist_ok=True)
+    fold_name = f'fold_{args.fold}'
+    checkpoint_dir = os.path.join(args.checkpoint_dir, fold_name)
+    log_dir = os.path.join(args.log_dir, fold_name)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
     
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -190,17 +209,25 @@ def main(args):
         )
     
     # TensorBoard
-    writer = SummaryWriter(args.log_dir)
+    writer = SummaryWriter(log_dir)
     
     # Data
     print("\nLoading data...")
-    train_loader, val_loader = get_dataloaders(
-        train_dir=args.train_dir,
-        val_dir=args.val_dir,
+    train_loader = get_dataloader(
+        data_dir=args.data_dir,
+        fold=args.fold,
+        split='train',
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        target_shape=tuple(args.target_shape),
-        use_hdf5=args.use_hdf5
+        target_shape=tuple(args.target_shape)
+    )
+    val_loader = get_dataloader(
+        data_dir=args.data_dir,
+        fold=args.fold,
+        split='val',
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        target_shape=tuple(args.target_shape)
     )
     
     # Model
@@ -259,16 +286,38 @@ def main(args):
         optimizer, milestones=[50, 100], gamma=0.5
     )
     
+    start_epoch = 1
+    best_val_loss = float('inf')
+    best_val_acc = 0.0
+
+    # Resume from checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print(f"\nResuming from checkpoint: {args.resume}")
+            resume_epoch, c_best_val_loss, c_best_val_acc = load_checkpoint(
+                model, optimizer, args.resume, device=device, scheduler=scheduler
+            )
+            start_epoch = resume_epoch + 1
+            if c_best_val_loss != float('inf'):
+                best_val_loss = c_best_val_loss
+            if c_best_val_acc != 0.0:
+                best_val_acc = c_best_val_acc
+            
+            # Fast-forward the scheduler only if it wasn't loaded from the checkpoint (for backward compatibility)
+            if scheduler.last_epoch == 0:
+                for _ in range(start_epoch - 1):
+                    scheduler.step()
+        else:
+            print(f"\nWarning: Checkpoint '{args.resume}' not found. Starting from scratch.")
+    
     # Training loop
     print("\nStarting training...")
     print("=" * 60)
     
-    best_val_loss = float('inf')
-    best_val_acc = 0
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
     
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         print(f"\nEpoch {epoch}/{args.epochs}")
         print("-" * 60)
         
@@ -288,7 +337,7 @@ def main(args):
         # Print metrics
         print(f"\nTrain Loss: {train_loss:.4f} | Train Acc: {train_metrics['accuracy']:.4f}")
         print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_metrics['accuracy']:.4f}")
-        print(f"Val Precision: {val_metrics['precision']:.4f} | Val Recall: {val_metrics['recall']:.4f}")
+        print(f"Val Precision: {val_metrics['precision']:.4f} | Val Recall: {val_metrics['recall']:.4f} | Val Specificity: {val_metrics['specificity']:.4f}")
         print(f"Val F1: {val_metrics['f1']:.4f} | Val AUC: {val_metrics['auc']:.4f}")
         
         # Log to tensorboard
@@ -296,26 +345,31 @@ def main(args):
         writer.add_scalar('Loss/val', val_loss, epoch)
         writer.add_scalar('Accuracy/train', train_metrics['accuracy'], epoch)
         writer.add_scalar('Accuracy/val', val_metrics['accuracy'], epoch)
+        writer.add_scalar('Specificity/train', train_metrics['specificity'], epoch)
+        writer.add_scalar('Specificity/val', val_metrics['specificity'], epoch)
         writer.add_scalar('F1/val', val_metrics['f1'], epoch)
         writer.add_scalar('AUC/val', val_metrics['auc'], epoch)
         
         # Log to wandb
         if args.use_wandb:
             wandb.log({
-                'epoch': epoch,
                 'train/loss': train_loss,
                 'train/accuracy': train_metrics['accuracy'],
                 'train/precision': train_metrics['precision'],
                 'train/recall': train_metrics['recall'],
+                'train/specificity': train_metrics['specificity'],
                 'train/f1': train_metrics['f1'],
                 'train/auc': train_metrics['auc'],
+            }, step=epoch)
+            
+            wandb.log({
                 'val/loss': val_loss,
                 'val/accuracy': val_metrics['accuracy'],
                 'val/precision': val_metrics['precision'],
                 'val/recall': val_metrics['recall'],
+                'val/specificity': val_metrics['specificity'],
                 'val/f1': val_metrics['f1'],
                 'val/auc': val_metrics['auc'],
-                'learning_rate': optimizer.param_groups[0]['lr']
             }, step=epoch)
         
         # Save history
@@ -324,15 +378,19 @@ def main(args):
         train_accs.append(train_metrics['accuracy'])
         val_accs.append(val_metrics['accuracy'])
         
-        # Save best model
-        if val_accs[-1] >= best_val_acc:
-            best_val_acc = val_accs[-1]
-            checkpoint_path = os.path.join(args.checkpoint_dir, f"{args.model_name}.pth")
-            save_checkpoint(model, optimizer, epoch, best_val_acc, checkpoint_path)
+        # Save best model based on lowest validation loss
+        if val_loss <= best_val_loss:
+            best_val_loss = val_loss
+            best_val_acc = val_metrics['accuracy']
+            checkpoint_path = os.path.join(checkpoint_dir, f"{args.model_name}.pth")
+            save_checkpoint(
+                model, optimizer, epoch, best_val_acc, checkpoint_path, 
+                best_val_loss=best_val_loss, scheduler=scheduler
+            )
             
             # Save confusion matrix and ROC curve for best model
-            cm_path = os.path.join(args.log_dir, 'confusion_matrix.png')
-            roc_path = os.path.join(args.log_dir, 'roc_curve.png')
+            cm_path = os.path.join(log_dir, 'confusion_matrix.png')
+            roc_path = os.path.join(log_dir, 'roc_curve.png')
             
             plot_confusion_matrix(
                 val_preds['labels'], val_preds['preds'],
@@ -343,32 +401,17 @@ def main(args):
                 save_path=roc_path
             )
             
-            # Log to wandb
-            if args.use_wandb:
-                wandb.log({
-                    'best_val_accuracy': best_val_acc,
-                    'confusion_matrix': wandb.Image(cm_path),
-                    'roc_curve': wandb.Image(roc_path)
-                })
-                # Save model artifact
-                artifact = wandb.Artifact(f'{args.model_name}_model', type='model')
-                artifact.add_file(checkpoint_path)
-                wandb.log_artifact(artifact)
+        # Log to wandb
+        if args.use_wandb:
+            wandb.log({
+                'info/epoch': epoch,
+                'info/learning_rate': optimizer.param_groups[0]['lr'],
+                'info/best_val_loss': best_val_loss,
+                'info/best_val_accuracy': best_val_acc,
+            }, step=epoch)
     
     print("\nTraining completed!")
     print(f"Best validation accuracy: {best_val_acc:.4f}")
-    
-    # Plot training curves
-    curves_path = os.path.join(args.log_dir, 'training_curves.png')
-    plot_training_curves(
-        train_losses, val_losses, train_accs, val_accs,
-        save_path=curves_path
-    )
-    
-    # Log final training curves to wandb
-    if args.use_wandb:
-        wandb.log({'training_curves': wandb.Image(curves_path)})
-        wandb.finish()
     
     writer.close()
 
@@ -377,18 +420,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Alzheimer classification baseline')
     
     # Data
-    parser.add_argument('--train_dir', type=str, default='../data/train',
-                       help='Training data directory')
-    parser.add_argument('--val_dir', type=str, default='../data/val',
-                       help='Validation data directory')
+    parser.add_argument('--data_dir', type=str, default='../data',
+                       help='Data directory containing train and val splits')
     parser.add_argument('--fold', type=int, default=0,
                        help='Fold index for tracking/logging')
-    parser.add_argument('--use_hdf5', action='store_true',
-                       help='Use HDF5 dataset format')
     
     # Model
     parser.add_argument('--model_name', type=str, default='simple',
-                       choices=['simple', 'compact', 'unet', 'resunet', 'swinunet', 'brainiac'],
+                       choices=['simple', 'compact', 'unet', 'resunet', 'swinunet', 'brainiac', 'vit_unetr'],
                        help='Model architecture')
     parser.add_argument('--base_features', type=int, default=32,
                        help='Base number of features')
@@ -396,6 +435,8 @@ if __name__ == "__main__":
                         help='Feature size for Swin-UNETR')
     
     # Training
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Path to checkpoint to resume training from')
     parser.add_argument('--epochs', type=int, default=100,
                        help='Number of epochs')
     parser.add_argument('--batch_size', type=int, default=4,

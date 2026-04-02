@@ -339,10 +339,15 @@ class PretrainViTBrainIAC(nn.Module):
         
         # Extract only backbone weights 
         backbone_state_dict = {}
+        classifier_state_dict = {}
         for key, value in state_dict.items():
+            if key.startswith("model.classifier.fc."):
+                # Remove "classifier.fc.." prefix to match nn.Linear ('weight' and 'bias')
+                new_key = key[len('model.classifier.fc.'):]
+                classifier_state_dict[new_key] = value
             if key.startswith("model.backbone."):
                 # Remove "backbone." prefix
-                new_key = key[24:]  # len("backbone.") = 9
+                new_key = key[len('model.backbone.backbone.'):]
                 backbone_state_dict[new_key] = value
             # print(key)
 
@@ -375,8 +380,13 @@ class PretrainViTBrainIAC(nn.Module):
 
 
 
-class ViTUNETRSegmentationModel(nn.Module):
-    def __init__(self, simclr_ckpt_path, img_size=(96,96,96), in_channels=1, out_channels=1):
+
+class ViTUNETRClassifier(nn.Module):
+    """
+    Classifier using pretrained ViT from UNETR segmentation model
+    """
+    def __init__(self, simclr_ckpt_path="checkpoints/segmentation.ckpt", img_size=(96,96,96), 
+                 in_channels=1, num_classes=2, is_freezed=False, **kwargs):
         super().__init__()
         # Load ViT backbone
         self.vit = ViT(
@@ -387,34 +397,52 @@ class ViTUNETRSegmentationModel(nn.Module):
             mlp_dim=3072,
             num_layers=12,
             num_heads=12,
-            save_attn=False,
-        )
-        # Load SimCLR weights
-        ckpt = torch.load(simclr_ckpt_path, map_location='cpu')
-        state_dict = ckpt.get('state_dict', ckpt)
-        backbone_state_dict = {k[9:]: v for k, v in state_dict.items() if k.startswith('backbone.')}
-        self.vit.load_state_dict(backbone_state_dict, strict=True)
-        # UNETR decoder
-        self.unetr = UNETR(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            img_size=img_size,
-            feature_size=16,
-            hidden_size=768,
-            mlp_dim=3072,
-            num_heads=12,
-            norm_name='instance',
-            res_block=True,
-            dropout_rate=0.0
+            save_attn=False, # standard ViT output
         )
         
-        # Transfer ViT weights to UNETR encoder
-        self.unetr.vit.load_state_dict(self.vit.state_dict(), strict=True)
-        print("="*10)
-        print("ViT loaded from scratch")
-        print("="*10)
+        import os
+        # Build state dict depending on available checkpoints
+        if simclr_ckpt_path and os.path.exists(simclr_ckpt_path):
+            ckpt = torch.load(simclr_ckpt_path, map_location='cpu')
+            state_dict = ckpt.get('state_dict', ckpt)
+            
+            # Extract standard segmented backbone (e.g., from unetr)
+            backbone_state_dict = {k[len("model.unetr.vit."):]: v for k, v in state_dict.items() if k.startswith('model.unetr.vit.')}
+            
+            if not backbone_state_dict:
+                # Alternatively check for model.vit prefix
+                backbone_state_dict = {k[len("model.vit."):]: v for k, v in state_dict.items() if k.startswith('model.vit.')}
+                
+            if backbone_state_dict:
+                self.vit.load_state_dict(backbone_state_dict, strict=False)
+                print(f"Loaded ViT weights from {simclr_ckpt_path}")
+        
+        if is_freezed:
+            for param in self.vit.parameters():
+                param.requires_grad = False
+            print("INFO: ViT backbone weights FROZEN.")
+            
+        # Simple decoder/classifier for lgg/hgg
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(768, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes)
+        )
+
     def forward(self, x):
-        return self.unetr(x) 
+        vit_out = self.vit(x)
+        # Depending on save_attn, MONAI ViT might return a tuple
+        x = vit_out[0] if isinstance(vit_out, tuple) else vit_out
+        
+        # Mean pooling over the sequence dimension N (216 patches)
+        # x shape: [B, N, 768] -> pooled_flat: [B, 768]
+        pooled_flat = x.mean(dim=1)
+        
+        # Classify
+        logits = self.classifier(pooled_flat)
+        return logits
 
 
 def get_model(model_name='simple', **kwargs):
@@ -422,7 +450,7 @@ def get_model(model_name='simple', **kwargs):
     Factory function to create classification model
     
     Args:
-        model_name: 'simple', 'compact', 'unet', 'resunet', or 'swinunet'
+        model_name: 'simple', 'compact', 'unet', 'resunet', 'swinunet', 'brainiac' or 'vit_unetr'
         **kwargs: Additional arguments for model
     
     Returns:
@@ -440,8 +468,10 @@ def get_model(model_name='simple', **kwargs):
         return SwinUNet3DClassifier(**kwargs)
     elif model_name == 'brainiac':
         return PretrainViTBrainIAC(**kwargs)
+    elif model_name == 'vit_unetr':
+        return ViTUNETRClassifier(**kwargs)
     else:
-        raise ValueError(f"Unknown model: {model_name}. Choose from: simple, compact, unet, resunet, swinunet")
+        raise ValueError(f"Unknown model: {model_name}. Choose from: simple, compact, unet, resunet, swinunet, brainiac, vit_unetr")
 
 
 if __name__ == "__main__":
