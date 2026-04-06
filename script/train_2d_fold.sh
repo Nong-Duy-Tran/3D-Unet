@@ -24,7 +24,8 @@ OPTIMIZER="adamw"
 SCHEDULER="cosine"
 USE_CLASS_WEIGHTS=false
 USE_AMP=false
-USE_WANDB=false
+USE_WANDB=true
+WANDB_GROUP="remove-block4-test"
 
 # Directories
 CHECKPOINT_DIR="../checkpoints/2d_cv5"

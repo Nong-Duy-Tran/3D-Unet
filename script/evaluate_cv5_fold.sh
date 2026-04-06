@@ -129,7 +129,8 @@ echo ""
 # Run evaluation
 python3 evaluate.py \
     --checkpoint "$CHECKPOINT" \
-    --data_dir "$TEST_DIR" \
+    --data_dir "$DATA_ROOT" \
+    --fold $FOLD_NUM \
     --model "$MODEL" \
     --target_shape $TARGET_SHAPE \
     --base_features $BASE_FEATURES\

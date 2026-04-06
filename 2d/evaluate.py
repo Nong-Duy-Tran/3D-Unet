@@ -188,7 +188,7 @@ if __name__ == '__main__':
     parser.add_argument('--fold', type=int, default=0,
                         help='Fold to evaluate (0-4)')
     parser.add_argument('--model_name', type=str, default='standard',
-                        choices=['standard', 'compact', 'mrinet'],
+                        choices=['standard', 'compact', 'mrinet', 'thresholded', 'gaussian_init'],
                         help='Model architecture')
     parser.add_argument('--num_slices', type=int, default=120,
                         help='Number of slices per volume')

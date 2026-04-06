@@ -10,9 +10,9 @@ Stage 1 - Cache:
   resample 1 mm iso -> crop by slice energy -> .nii.gz
 
 Stage 2 - Split metadata:
-    create standard 5-fold CV metadata (train/val/test) using StratifiedGroupKFold.
-    For each outer fold, val is a single 20% split from train (not nested k-fold).
-  No per-fold 3D directories are materialized; folds are managed by JSON.
+        create standard 5-fold CV metadata (train/val/test) using StratifiedGroupKFold.
+        For each outer fold, val is a single 20% split from train (not nested k-fold).
+    Per-fold directories can be materialized with symlinks to cached .nii.gz files.
 """
 from __future__ import annotations
 
@@ -699,9 +699,14 @@ def save_fold_metadata(
     output_dir: Path,
     val_ratio: float = 0.2,
     val_seed: int = 42,
+    cache_lookup: dict[str, Path] | None = None,
+    materialize_folds: bool = False,
 ) -> dict:
     """
-    Save one JSON-driven split manifest plus summaries, including val split.
+        Save one JSON-driven split manifest plus summaries, including val split.
+
+        Optionally materialize per-fold directories with symlinks:
+            fold_<k>/<split>/<class_name>/<session_id>.nii.gz -> _cache/<session_id>.nii.gz
 
     Output folder:
       split_info_with_val/
@@ -726,6 +731,12 @@ def save_fold_metadata(
     }
     summary: dict = {"n_folds": len(cv_splits), "stratified": True, "grouped": True, "folds": {}}
     cdr_stats: dict = {}
+    materialized_links = 0
+    missing_cache_sources = 0
+
+    def _class_dir_name(class_name: str) -> str:
+        # Keep directory names filesystem-safe while preserving readability.
+        return str(class_name).strip().replace("/", "_").replace(" ", "_")
 
     for fold_idx, (outer_train_data, test_data) in enumerate(cv_splits):
         train_data, val_data = create_train_val_split_once(
@@ -772,6 +783,35 @@ def save_fold_metadata(
                     cdr_stats[fold_key][split_name].get(cdr, 0) + 1
                 )
 
+        if materialize_folds:
+            fold_dir = output_dir / f"fold_{fold_idx}"
+            for split_name in ("train", "val", "test"):
+                split_dir = fold_dir / split_name
+                if split_dir.exists():
+                    shutil.rmtree(split_dir)
+
+            for split_name, split_data in [("train", train_data), ("val", val_data), ("test", test_data)]:
+                for item in split_data:
+                    session_id = item["session_id"]
+                    source_path = (
+                        cache_lookup.get(session_id)
+                        if cache_lookup is not None
+                        else output_dir / "_cache" / f"{session_id}.nii.gz"
+                    )
+                    if source_path is None or not source_path.exists():
+                        missing_cache_sources += 1
+                        continue
+
+                    class_dir = fold_dir / split_name / _class_dir_name(item["class_name"])
+                    class_dir.mkdir(parents=True, exist_ok=True)
+
+                    link_path = class_dir / f"{session_id}.nii.gz"
+                    if link_path.exists() or link_path.is_symlink():
+                        link_path.unlink()
+
+                    link_path.symlink_to(source_path.resolve())
+                    materialized_links += 1
+
     (info_dir / "folds.json").write_text(
         json.dumps(folds_json, indent=2), encoding="utf-8"
     )
@@ -789,6 +829,10 @@ def save_fold_metadata(
     pd.DataFrame(all_rows).to_csv(info_dir / "folds.csv", index=False)
 
     print(f"\nSplit metadata saved → {info_dir}")
+    if materialize_folds:
+        print(f"Materialized fold symlinks: {materialized_links}")
+        if missing_cache_sources:
+            print(f"Warning: missing cache files for {missing_cache_sources} split entries")
     return summary
 
 
@@ -860,7 +904,14 @@ def main(args: argparse.Namespace) -> None:
         print("\n" + "=" * 70)
         print("Dry run – no files written. Remove --dry_run to process.")
         print("=" * 70)
-        save_fold_metadata(cv_splits, output_dir, val_ratio=0.2, val_seed=args.seed)
+        save_fold_metadata(
+            cv_splits,
+            output_dir,
+            val_ratio=0.2,
+            val_seed=args.seed,
+            cache_lookup=None,
+            materialize_folds=False,
+        )
         return
 
     # ------------------------------------------------------------ process
@@ -875,7 +926,14 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # ---------------------------------------------------------- metadata
-    summary = save_fold_metadata(cv_splits, output_dir, val_ratio=0.2, val_seed=args.seed)
+    summary = save_fold_metadata(
+        cv_splits,
+        output_dir,
+        val_ratio=0.2,
+        val_seed=args.seed,
+        cache_lookup=cache_map,
+        materialize_folds=True,
+    )
 
     # ---------------------------------------------------------- summary
     print("\n" + "=" * 70)

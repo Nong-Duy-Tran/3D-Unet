@@ -316,8 +316,8 @@ class SwinUNet3DClassifier(nn.Module):
 
 class PretrainViTBrainIAC(nn.Module):
     def __init__(
-            self, simclr_ckpt_path="/home/ntq/Projects/longtd/MRI/checkpoints/vit_mci.ckpt", 
-            num_classes=1, is_freezed=True, **kwargs
+            self, simclr_ckpt_path="/home/ntq/Projects/longtd/MRI/checkpoints/BrainIAC.ckpt", 
+            num_classes=1, is_freezed=False, **kwargs
         ):
         super(PretrainViTBrainIAC, self).__init__()
         
@@ -349,7 +349,7 @@ class PretrainViTBrainIAC(nn.Module):
                 # Remove "backbone." prefix
                 new_key = key[len('model.backbone.backbone.'):]
                 backbone_state_dict[new_key] = value
-            # print(key)
+            print(key)
 
         if is_freezed:
             for param in self.backbone.parameters():
@@ -361,6 +361,8 @@ class PretrainViTBrainIAC(nn.Module):
         print("Backbone weights loaded!!")
 
         self.classifier = nn.Linear(768, num_classes)
+        # self.classifier.load_state_dict(classifier_state_dict, strict=True)
+        
         self.drop_out = nn.Dropout(p=0.2)
 
     def forward(self, x):
@@ -422,7 +424,6 @@ class ViTUNETRClassifier(nn.Module):
                 param.requires_grad = False
             print("INFO: ViT backbone weights FROZEN.")
             
-        # Simple decoder/classifier for lgg/hgg
         self.classifier = nn.Sequential(
             nn.Dropout(0.5),
             nn.Linear(768, 256),
@@ -433,14 +434,10 @@ class ViTUNETRClassifier(nn.Module):
 
     def forward(self, x):
         vit_out = self.vit(x)
-        # Depending on save_attn, MONAI ViT might return a tuple
         x = vit_out[0] if isinstance(vit_out, tuple) else vit_out
-        
-        # Mean pooling over the sequence dimension N (216 patches)
-        # x shape: [B, N, 768] -> pooled_flat: [B, 768]
+
         pooled_flat = x.mean(dim=1)
         
-        # Classify
         logits = self.classifier(pooled_flat)
         return logits
 
@@ -511,7 +508,7 @@ if __name__ == "__main__":
 
 
     x = torch.randn(4, 1, 96, 96, 96).to(device)
-    segment_model = PretrainViTBrainIAC().to(device)
+    segment_model = ViTUNETRClassifier("checkpoints/segmentation.ckpt").to(device)
     output = segment_model(x)
     print(f"Output shape: {output.shape}")
     total_params = sum(p.numel() for p in segment_model.parameters())
